@@ -1,0 +1,97 @@
+# Eco Track — Onboarding (Phase 2) — Progress Summary / Handoff
+
+> Status: paused deliberately after locking architecture, to resume main-app
+> work. Onboarding tasks are simple, static, and independent of core app
+> plumbing — safe to defer without blocking anything else. This doc is the
+> handoff snapshot: what's decided, what's open, what's next.
+
+---
+
+## 1. Core architectural decision: onboarding as a task queue
+
+Onboarding is not one long "onboarding mode" conversation with a single
+end-of-flow `save_profile` call. It's a **linear queue of discrete tasks**,
+each independently scoped:
+
+```
+Task = { id, kind, fields, promptFragment, completionSignal }
+```
+
+- **`kind: "atomic"`** — single-shot, deterministic, no free-text parsing
+  (e.g. the settings card — units/timezone/darkMode confirm).
+- **`kind: "extractive"`** — one question, one free-text answer, one
+  parse + inline confirm chip (goals, equipment, injuries).
+- **`kind: "compound"`** — may take more than one exchange; used to split
+  training-background into two tasks with different completion criteria
+  (soft/placeholder-tolerant vs. must-ask-directly).
+
+**Why this matters beyond onboarding:** each Gemini call for a task only
+gets that task's prompt fragment + a thin "already have: X, Y" carry-forward
+— not the full onboarding script and not prior tasks' full Q&A transcripts.
+Task results are held in ephemeral session state and **stack** as each task
+completes; the actual `profiles` row is written once, atomically, when the
+queue empties. This is intentionally the *simple* version of a pattern
+flagged for reuse in workout creation/analysis later (heavier version:
+branching, dependencies, re-entrancy — deliberately NOT built into
+onboarding's queue, which stays strictly linear).
+
+---
+
+## 2. Locked task list (7 tasks, in order)
+
+| # | Task ID | Kind | Fields it produces | Notes |
+|---|---|---|---|---|
+| 1 | `identity` | atomic (text-only, no tool) | `name` | Eco's opening line, no card |
+| 2 | `settings` | atomic (card) | `weightUnit`, `distanceUnit`, `timezone`, `darkMode` | Device auto-detect → bundled confirm card (Option B: lightweight, non-persisted, not the `cards` table). `darkMode` gets no conversational moment — silently applied from system theme. |
+| 3 | `goals` | extractive | `goals` | Free string, comma-separated, injected as-is |
+| 4 | `equipment` | extractive | `equipment` | Same shape as goals |
+| 5 | `injuries` | extractive, safety-flagged | `injuries` | Asked directly, not folded into other tasks; `[]` if declined. Standing behavior (periodic re-ask) belongs in Turn Lifecycle Spec too, not just onboarding — carried as cross-cutting item, see §4. |
+| 6 | `background_general` | compound, soft | `trainingPattern` + 4 `skillLevel` dims (`strength`, `flexibility`, `endurance`, `calisthenicsSkills`) | Placeholder-tolerant — these 4 dims are also observable later from logged workouts, correctable via `dailySummaries.profileUpdated` |
+| 7 | `background_explicit` | compound, hard | `skillLevel.sportSpecific`, `skillLevel.bodyComposition` | **Must** be asked directly — no passive future data source exists for either. `bodyComposition` phrasing needs care (tie to goals-language from task 3, avoid clinical/diet-culture framing). |
+
+**Confirmation mechanism split** (a real finding from this design pass):
+- Tasks 1–2 (identity, settings) → no AI interpretation needed; settings uses the Option-B card.
+- Tasks 3–7 → each produces its own small tool call (`save_goals`, `save_equipment`, `save_injuries`, `save_background_general`, `save_background_explicit`) and its own inline confirm chip **at the moment it's captured** — not batched into one end-of-flow recap. This is why the old "Phase 2e recap card" dissolved (see §3).
+
+---
+
+## 3. What this replaced from the earlier draft
+
+- **No end-of-onboarding recap/review screen.** Confirmation is distributed, one chip per task, as it completes. What's left of "2e" is purely a backend concern: the assembly function that folds all stacked task results + settings values into one atomic `profiles` insert. Not yet written field-by-field.
+- **No single `save_profile` tool schema.** Replaced by N task-scoped tool schemas (one per extractive/compound task). None of these have been drafted yet — this is the next concrete step.
+- **No placeholder-first stance for `skillLevel`.** Superseded: since onboarding is chat-only (no forms) and dynamic AI-parsed collection is the primary path anyway, all six `skillLevel` dims get real answers where possible. Placeholders are a fallback only if a task is explicitly skipped, not the default design.
+
+---
+
+## 4. Two schema gaps flagged during this review (unresolved, need action independent of onboarding)
+
+1. **`profiles.timezone` missing from the Phase 7 schema doc.** Required by the Turn Lifecycle Spec's §1 context assembly and the §7 daily-check cron (buckets users by timezone for local-midnight processing). Needs to be added to the schema as a required field — this is a schema fix, not an onboarding design choice, and should happen before/alongside onboarding implementation.
+2. **`profiles.trainingAvailability` is schema-required but never read** anywhere in the Turn Lifecycle Spec's §1 fetch list. Decision: out of scope for onboarding entirely — seed with a placeholder, editable via settings later, never asked about in chat.
+
+---
+
+## 5. Other standing decisions worth carrying forward
+
+- **Unit storage semantics:** `weightUnit`/`distanceUnit` are the *storage* preference, not just display. `log_workout` parsing needs a normalization step (convert to stored preference) and a one-time-per-mismatch light confirm if a user's spoken unit diverges from their stored preference — not a confirm every time.
+- **Injuries re-asking is cross-cutting**, not onboarding-only — belongs in the Turn Lifecycle Spec as a standing periodic behavior, not just task 5 above.
+- **Profile row write timing:** nothing needs a real `profiles` row to exist before onboarding finishes, since onboarding runs its own turn logic outside the normal §1 context-assembly path. Single atomic insert at queue-empty, no partial/placeholder row ever persisted.
+
+---
+
+## 6. Roadmap status (for whoever picks this up)
+
+| Phase | Status |
+|---|---|
+| 2a — Settings card | Resolved (folded into Task 2 above) |
+| 2b — Conversation design | **Done** |
+| Task architecture (queue, task shape, confirmation split) | **Done** — this session's main output |
+| 2c — Per-task tool schemas | **Not started.** Next concrete step: define `save_goals`, `save_equipment`, `save_injuries`, `save_background_general`, `save_background_explicit` arg shapes. |
+| 2d — System prompt / tasking | Not started, but rescoped: 7 small prompt fragments + one persona-constant wrapper, written *to* the 2c schemas once those exist. |
+| 2e — Recap/write assembly | Architecturally resolved (no batch recap UI); the field-by-field assembly function itself not yet written. |
+| 2f — Edge cases | Not started, but now mechanical rather than open-ended: resume = restore `(pointer, completedResults[])`; skip = an explicit per-task-kind skip variant of that task's completion signal. |
+
+**Next action when resumed:** 2c — draft the five task-scoped tool schemas, since 2d's prompt fragments depend on them.
+
+---
+
+*This is a progress snapshot, not a final spec — supersedes nothing in the Phase 7 schema or Turn Lifecycle Spec, and should be read alongside both.*

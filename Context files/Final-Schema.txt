@@ -1,0 +1,392 @@
+# Eco Track — Final Compiled Schema (Phase 7)
+
+Convex schema for Eco Track, a conversational AI workout logging app.
+This document compiles all decisions from Phases 1–6, plus the schema-relevant
+decisions surfaced in the Turn Lifecycle Specification (consolidated). Notes are
+embedded as comments directly in the schema so context travels with the field
+it explains. This document is schema-only — turn-by-turn behavior lives in the
+Turn Lifecycle Specification.
+
+---
+
+## Changelog since Phase 6
+
+Reconciled against the Turn Lifecycle Spec (consolidated):
+
+- **`cards.sessionId`** — now optional. Low-confidence cards are written
+  without a session until user confirm backfills it.
+- **`cards.state`** — `"editing"` removed. Only `"pending" | "confirmed"`
+  remain; direct manual edits no longer need a distinct state.
+- **`cards.order`** — added. Display/label order, set at creation; also
+  backs the ephemeral "Card N" prompt-labeling scheme.
+- **`cards.inDiscussion`** — added. `boolean`, true while a card is under
+  an active Ask Eco conversation.
+- **`messages.cardContext`** — added. Optional array tracking which cards
+  were pinned/discussed on that turn, and which closed.
+- **`sessionSummaries.compressCount` → `compressedTill`** — replaced with a
+  timestamp of the last raw message covered (cumulative across tiers);
+  `compressCount` was unneeded duplication.
+- **`chats.cachedContext` / `chats.cachedContextAt`** — added. Snapshot of
+  `profiles` + `workoutContext`, built once per chat/day, invalidated by
+  the daily-check cron.
+- **`workoutContext.triggerReason`** — narrowed to `"daily-check"` only.
+  `"session-close"` removed: there is no separate session-close trigger:
+  a single hourly cron drives both `dailySummaries` and `workoutContext`.
+
+---
+
+## Global identity note
+
+`userId` is `v.id("profiles")` everywhere, **except** `profiles.userId`
+itself, which is the one exception — the foreign key *to* Convex Auth,
+the root of the identity chain.
+
+## Block Types Enum (locked, Phase 2)
+
+```
+"standard" | "superset" | "dropset" | "emom" | "pyramid" | "circuit" | "amrap"
+```
+
+---
+
+## Full Schema
+
+```
+profiles: {
+  userId                   // FK -> Convex Auth users (the one exception to the userId rule above)
+  name                     // string
+  createdAt                // number (timestamp)
+
+  injuries                 // array of { description, status, notedAt }
+  equipment                // string, comma-separated, injected as-is
+  goals                    // string, comma-separated, injected as-is
+  trainingAvailability     // { daysPerWeek, sessionLength }
+  tonePreference           // string
+  weightUnit               // "kg" | "lbs"
+  distanceUnit             // "miles" | "km"
+  darkMode                 // boolean
+  // ^ darkMode + weightUnit absorbed the old `userPreferences` table — folded in because it queried the same way as profiles already did.
+timezone   // string, IANA identifier (e.g. "Europe/London")
+           // required. Set during onboarding (device-detected, same moment as weightUnit/distanceUnit/darkMode in Task 2).
+           // Read by Turn Lifecycle §1 (context assembly) and §7 (daily-check cron bucketing).
+
+  skillLevel: {
+    strength, flexibility, endurance,
+    calisthenicsSkills, sportSpecific, bodyComposition   // all strings
+  }
+  trainingPattern          // string
+}
+.index('by_userId', ['userId'])   // Convex Auth lookup on login
+
+// CASCADE: deleting a profile cascades every table below EXCEPT userReports.
+
+
+chats: {
+  userId              // FK -> profiles
+  date                // string "2026-06-29"
+  createdAt           // number (timestamp)
+  cachedContext        // optional object, snapshot of profiles+workoutContext,
+                        // built once per chat/day. Avoids re-querying
+                        // rarely-changing context on every turn.
+  cachedContextAt       // optional number (timestamp) — invalidated by the
+                        // daily-check cron (see workoutContext / dailySummaries
+                        // below). No separate index needed; read alongside the
+                        // chat row itself.
+  // OPEN ITEM: whether a *new* chat opened mid-day (after workoutContext has
+  // already changed that day) builds a fresh cache at creation, or could
+  // inherit a stale cache from an earlier same-day chat — unresolved,
+  // carried in the parking lot below.
+}
+.index('by_user_date', ['userId', 'date'])
+  // Compound index does double duty: (1) everyday "load this user's chat
+  // list," and (2) the per-user retention sweep below. No separate
+  // by_date index needed since the sweep is always scoped to one userId.
+
+// CASCADE: chats has TWO deletion paths with DIFFERENT cascade lists —
+// this is intentional, not an inconsistency. Why: a scheduled sweep is a
+// storage-management decision and shouldn't touch the journal layer; a
+// force-delete is an intent-to-erase decision and should take the journal
+// with it. Same parent, same child tables, different lists depending on
+// *why* the deletion happened — a value that has to live in which
+// mutation gets called, not in the schema itself.
+//
+//   1. Retention sweep (automatic, per-user, weekly-since-last-check, 1yr window)
+//      -> cascades: messages, cards, sessionSummaries, messageFeedback (transitively)
+//      -> does NOT cascade dailySummaries (survives, chatId left dangling on purpose)
+//      -> implemented as its own mutation (e.g. sweepOldChats), triggered as a
+//         side effect of that user's login if 7+ days since last check.
+//         A user who never returns never gets swept — accepted tradeoff.
+//
+//   2. Force delete (user-initiated "delete this chat," or admin action)
+//      -> cascades everything the sweep does, PLUS dailySummaries
+//      -> implemented as a separate mutation (e.g. forceDeleteChat)
+//
+//   Kept as two separate mutations rather than one parameterized
+//   deleteChat(hard: boolean) — flagged so a future refactor doesn't
+//   accidentally collapse them and lose the distinction.
+//
+//   cachedContext / cachedContextAt are ordinary fields on the chats row
+//   itself, so both deletion paths remove them for free — no separate
+//   cascade handling required.
+
+
+messages: {
+  chatId        // FK -> chats
+  userText      // string
+  ecoText       // string
+  sessionId     // optional FK -> sessions
+  timestamp     // number
+  cardContext   // optional array of { cardId, order, closed: boolean }
+                // One entry per pinned/discussed card active as of this turn.
+                // closed: true appears exactly once, on the turn that card's
+                // discussion ends. Drives (a) next turn's prompt — stop
+                // injecting a closed card — and (b) UI: chip renders once
+                // on the closure message, then falls off permanently.
+}
+.index('by_chat', ['chatId'])
+.index('by_session', ['sessionId'])
+
+// CASCADE: deleted whenever parent chat is deleted, under BOTH paths.
+// messages deletion cascades messageFeedback in turn (see messageFeedback
+// note below — no standalone message-deletion path exists elsewhere).
+
+
+cards: {
+  chatId        // FK -> chats
+  messageId     // FK -> messages
+  sessionId     // optional FK -> sessions — undefined until a low-confidence
+                // card is confirmed, at which point confirm backfills it.
+  rawOutput     // string, exact Gemini JSON
+  parsedData    // object, structured interpretation
+  state         // "pending" | "confirmed"
+                // "editing" removed entirely — direct manual edits are
+                // instant/local (user edits fields, taps confirm, same
+                // write path as a normal confirm) and need no distinct state.
+  order         // number, display/label order, set at creation — also backs
+                // the ephemeral "Card N" request-scoped labeling used when
+                // multiple cards are pinned in a prompt (never persisted
+                // as a schema field on the model side, just this order value).
+  inDiscussion  // boolean, true while this card is under an active Ask Eco
+                // conversation. Ask Eco is available on both pending and
+                // confirmed cards; a correction on a confirmed card patches
+                // this row but does not silently rewrite exercises — it
+                // waits for an explicit re-confirm.
+  createdAt     // number (timestamp)
+}
+.index('by_chat', ['chatId'])
+.index('by_session', ['sessionId'])   // TEMPORARY — safe to drop post-growth-phase, no dependents
+.index('by_message', ['messageId'])   // TEMPORARY — safe to drop post-growth-phase, no dependents
+// ^ flagged three times now (Phase 4, 5, 7) — worth actually scheduling
+//   a removal date rather than leaving as a permanent "temporary."
+
+// CASCADE: deleted whenever parent chat is deleted, under BOTH paths.
+// sessionId being optional doesn't change this — cascade is keyed off
+// chatId, not sessionId.
+
+
+sessions: {
+  userId        // FK -> profiles
+  date          // string "2026-06-29"
+  notes         // optional string
+  createdAt     // number (timestamp)
+}
+.index('by_user_date', ['userId', 'date'])
+
+// CASCADE: never deleted by the app itself — the permanent workout record
+// layer. Only removed transitively via a profiles deletion. No scheduled
+// deletion path exists; manual/admin deletion is an edge case, not a
+// designed feature. This also guarantees workoutContext.sourceSessionId
+// can never dangle.
+
+
+blocks: {
+  sessionId         // FK -> sessions
+  userId            // FK -> profiles  [DENORMALIZED, not indexed]
+                     // Write-once, structurally cannot drift: no mutation
+                     // exists anywhere in the schema to reassign
+                     // blocks.sessionId, so there's no path that could
+                     // cause the denormalized copy to diverge from the
+                     // value reachable via the transitive chain. This is
+                     // a structural guarantee, not an operational one.
+                     // FUTURE-PROOFING FLAG: if a "move block to a
+                     // different session" feature is ever added (not
+                     // currently planned), it would need to update this
+                     // denormalized userId on the block AND every
+                     // exercise beneath it as part of the same operation.
+  types             // array of block type literals (not indexed)
+  intervalSeconds   // optional number
+  order             // number
+  createdAt         // number (timestamp)
+}
+.index('by_session', ['sessionId'])
+
+// CASCADE: deleted transitively via sessions -> profiles.
+
+
+exercises: {
+  blockId       // FK -> blocks
+  userId        // FK -> profiles  [DENORMALIZED, not indexed]
+                // Same write-once/no-drift guarantee as blocks.userId
+                // above — no mutation exists to reassign exercises.blockId.
+  name          // string
+  weightUnit    // optional "kg" | "lbs"
+  order         // number
+  sets          // array of { reps?, weight?, duration?, distance? }
+  createdAt     // number (timestamp)
+}
+.index('by_block', ['blockId'])
+
+// CASCADE: deleted transitively via blocks -> sessions -> profiles.
+
+
+dailySummaries: {
+  chatId               // FK -> chats
+  userId               // FK -> profiles
+  date                 // string "2026-06-29"
+  content              // string, narrative journal entry
+  profileUpdated       // boolean
+  profileUpdateNotes   // optional string
+  createdAt            // number (timestamp)
+}
+.index('by_chat', ['chatId'])
+.index('by_user_date', ['userId', 'date'])
+.index('by_profileUpdated', ['profileUpdated'])
+
+// CASCADE: intentionally SURVIVES the retention sweep — chatId is left
+// dangling on purpose, standing on userId + date alone from that point
+// on. This is deliberate, not a bug: the founder wants the journal to
+// persist independent of the raw conversation. Cascades on force-delete
+// (chats path 2) and on profiles deletion.
+
+
+workoutContext: {
+  userId                 // FK -> profiles
+  content: { currentFocus, recentProgress, consistency, notableAchievements, considerations }
+  triggerReason          // "daily-check"
+                          // "session-close" removed — there is no separate
+                          // session-close event anymore. A single hourly cron
+                          // buckets users by profiles.timezone, finds zones at
+                          // local midnight, and runs the daily-check for them —
+                          // this same cron updates workoutContext, writes
+                          // dailySummaries, and purges that day's
+                          // sessionSummaries, all together.
+  sourceSessionId        // optional FK -> sessions
+  sourceDailySummaryId   // optional FK -> dailySummaries
+  createdAt              // number (timestamp)
+}
+.index('by_user', ['userId'])
+// Append-only, rolls over. No isCurrent flag.
+
+// CASCADE: cascades on profiles deletion. sourceSessionId can never
+// dangle since sessions are never deleted by the app.
+
+
+sessionSummaries: {
+  chatId          // FK -> chats
+  content         // string
+  tier            // 1 | 2
+  compressedTill  // number (timestamp) — the last raw message covered by
+                  // this summary, cumulative across tiers. Replaces the old
+                  // compressCount, which was unneeded duplication of the
+                  // same information.
+  order           // number
+  createdAt       // number (timestamp)
+}
+.index('by_chat_and_tier', ['chatId', 'tier'])
+// Ephemeral — purged at the app level once a chat's dailySummaries entry
+// is written (same daily-check cron, see workoutContext note above).
+
+// CASCADE: deleted under BOTH chats deletion paths (sweep and force-delete).
+
+
+apiUsage: {
+  userId      // FK -> profiles
+  timestamp   // number
+  tokensUsed  // number
+}
+.index('by_user_time', ['userId', 'timestamp'])
+
+// CASCADE: cascades on profiles deletion.
+
+
+messageFeedback: {
+  messageId   // FK -> messages
+  userId      // FK -> profiles
+  rating      // "up" | "down"
+  comment     // optional string, only when rating = "down"
+  timestamp   // number
+}
+.index('by_rating', ['rating'])
+// No index on userId or messageId yet — by_message deferred to the v2
+// review-screen feature (Phase 4 note, still valid).
+
+// CASCADE: cascades whenever its parent message is deleted — resolved
+// this design session. Reasoning: messages are only ever deleted as part
+// of a chats cascade (no standalone message-deletion path exists), and
+// the intended v2 use of messageFeedback is a review screen pairing
+// feedback with the message that caused it. An orphaned feedback row
+// would be un-actionable, not merely unreferenced, and no confirmed use
+// case pulls toward preserving it independently. Cascades under both the
+// retention sweep and force-delete paths, and on profiles deletion.
+//
+// Contrast with userReports below: both are user-generated content tied
+// to a userId, but the deciding factor was confirmed future use, not the
+// field itself. userReports has a stated future use that depends on the
+// id staying valid past deletion; messageFeedback's only stated future
+// use (the review screen) actively requires the MESSAGE to survive
+// alongside it — which cascading achieves — so there's nothing pulling
+// toward messageFeedback outliving its message.
+
+
+userReports: {
+  userId     // FK -> profiles
+  type       // "bug" | "feature" | "other"
+  message    // string
+  timestamp  // number
+}
+.index('by_type_timestamp', ['type', 'timestamp'])
+
+// CASCADE: the SOLE EXCEPTION to the profiles cascade. userId is left
+// dangling on profile deletion, deliberately: the founder wants to
+// preserve per-user report counts (e.g. rewarding repeat bug reporters)
+// even past account deletion, and report text may itself reference the
+// user, so nulling it out would be both more complex and counterproductive.
+```
+
+---
+
+## Tables removed / folded in
+
+- **`userPreferences`** — folded into `profiles` (`weightUnit`, `darkMode`). Natural fit: same table, same query pattern.
+- **`aiFeedback`** — **dropped entirely.** Was meant to log AI mis-parses and corrections tied to a `systemPrompt` version, for prompt-iteration analysis. On review this overlapped with `cards.rawOutput` / `cards.parsedData` / `cards.state`, which capture the same signal at the point of correction — except `cards` is ephemeral and doesn't preserve it long-term. Founder confirmed no intent to build correction-analysis tooling in v1, so the table was dropped rather than folded or kept dormant. Repurposing `cards` (which is designed to auto-confirm and often delete) into a permanent log would have fought its own design. If correction-analytics becomes a real feature later, it's a fresh design exercise, not a revival of this table.
+
+---
+
+## Cascade summary at a glance
+
+| Trigger | Cascades |
+|---|---|
+| `profiles` deleted | Everything **except** `userReports` |
+| `chats` retention sweep | `messages`, `cards`, `sessionSummaries`, `messageFeedback` (transitively). **Not** `dailySummaries`. |
+| `chats` force delete | Same as sweep, **plus** `dailySummaries` |
+| `sessions` deleted | Never happens via app logic — manual/admin only, not a designed path |
+
+---
+
+## Parking lot — explicitly deferred, not forgotten
+
+| Item | Why deferred | Notes for later |
+|---|---|---|
+| "Git-style" chat history | Judged unnecessary v1 complexity, reconfirmed v2 | Would require branch/parent pointers on `messages`/`chats` |
+| Vector/semantic search over `messages`/`dailySummaries` | Not needed for v1 | Convex has native vector search — cheap to add later |
+| `retainChatHistory` user toggle | Real feature, v2 decision | Would live as a `profiles` field; would trigger a purge job for that user's `messages` if off |
+| Skills table (reusable procedures) | Prompt/config concern, not data-modeling | Only becomes a schema question if skills need to be editable without redeploying code |
+| Importance-threshold-based reflection | Current after-session + nightly combo is reasonable for v1 | Possible v2 refinement, Stanford Generative Agents-style |
+| `messageFeedback` aggregate analytics | Explicitly deferred — not worth designing at v1 when the feature is realistically v4 | If built, design its own retention-independent data needs fresh, rather than relying on rows that happened to survive `chats` cascades |
+| `chats.cachedContext` invalidation for a chat opened mid-day | Open item carried over from the Turn Lifecycle Spec review, unresolved | Confirm whether a new chat created after `workoutContext` has already changed that day builds a fresh cache immediately, or inherits a stale cache from an earlier same-day chat |
+| Gemini-side prompt/context caching | Deferred post-v1 | Revisit once the static system prompt is finalized and its real token weight is known |
+| Multi-card free-text "Ask Eco" (ambiguous card resolution) | Deferred to the pin feature | Explicit multi-select avoids the ambiguity of resolving free text against multiple pinned cards |
+
+---
+
+*End of Phase 7 — Final Compiled Schema. This document is self-contained and supersedes all prior schema documents in this session series.*

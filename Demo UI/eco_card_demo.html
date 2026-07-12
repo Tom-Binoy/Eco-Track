@@ -1,0 +1,535 @@
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#2b2a27; --cardBg:#302f2c; --subBg:#252420; --text:#eeeeee; --textMuted:#9a9893;
+    --textFaint:#5a5855; --border:rgba(255,255,255,0.08); --borderSubtle:rgba(255,255,255,0.04);
+    --accent:#22c55e; --accentHover:#16a34a; --accentGlow:rgba(34,197,94,0.2);
+    --toggleBg:#3a3936; --confirmBg:#0d1f13; --confirmBorder:#14532d; --confirmText:#4ade80; --confirmMuted:#166534;
+    --danger:#ef4444;
+  }
+  [data-theme="light"]{
+    --bg:#F5F5F0; --cardBg:#FFFFFF; --subBg:#F5F5F0; --text:#1a1a18; --textMuted:#6b6a68;
+    --textFaint:#a8a5a0; --border:rgba(0,0,0,0.08); --borderSubtle:rgba(0,0,0,0.04);
+    --accent:#16a34a; --accentHover:#15803d; --accentGlow:rgba(22,163,74,0.18);
+    --toggleBg:#e8e5dd; --confirmBg:#f0fdf4; --confirmBorder:#d1fae5; --confirmText:#166534; --confirmMuted:#4ade80;
+    --danger:#ef4444;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{margin:0; background:var(--bg); font-family:Georgia,serif; color:var(--text); transition:background .3s ease;}
+  .wrap{max-width:420px; margin:0 auto; padding:16px 14px 40px;}
+  .topbar{display:flex; align-items:center; justify-content:space-between; padding:8px 2px 12px;}
+  .topbar .label{font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--textFaint); font-weight:700;}
+  .themeBtn{width:32px; height:32px; border-radius:50%; border:1px solid var(--border); background:var(--toggleBg);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:14px;}
+
+  .styleToggleRow{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; gap:8px;}
+  .styleToggleLabel{font-size:10px; font-weight:700; color:var(--textFaint); text-transform:uppercase; letter-spacing:.1em;}
+  .styleToggle{display:flex; gap:4px; background:var(--subBg); padding:3px; border-radius:9px;}
+  .styleTab{padding:6px 12px; border-radius:6px; border:none; background:transparent; color:var(--textMuted);
+    font-family:Georgia,serif; font-size:11px; font-weight:600; cursor:pointer;}
+  .styleTab.active{background:var(--accent); color:#fff;}
+
+  .tabs{display:flex; gap:6px; margin-bottom:16px; overflow-x:auto; padding-bottom:2px;}
+  .tab{flex-shrink:0; padding:8px 12px; border-radius:9px; border:1px solid var(--border); background:var(--subBg);
+    color:var(--textMuted); font-family:Georgia,serif; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;}
+  .tab.active{background:var(--accent); color:#fff; border-color:transparent;}
+
+  .card{position:relative; background:var(--cardBg); border:1px solid var(--border); border-radius:20px; padding:20px;
+    box-shadow:0 .25rem 1.25rem rgba(0,0,0,.28); display:flex; flex-direction:column; gap:14px; touch-action:none;
+    transition:box-shadow .2s ease;}
+  .swipeTint{position:absolute; inset:0; border-radius:20px; pointer-events:none; opacity:0; transition:opacity .15s ease;}
+
+  .cardHeaderRow{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;}
+  .exLabel{font-size:10px; font-weight:700; color:var(--textFaint); text-transform:uppercase; letter-spacing:.12em; margin:0 0 3px;}
+  .exNameRow{display:flex; align-items:center; gap:6px;}
+  .exNameInput{font-family:'Bebas Neue',sans-serif; font-size:32px; letter-spacing:.04em; color:var(--text);
+    background:transparent; border:none; outline:none; padding:0; width:100%; border-bottom:1px dashed transparent;}
+  .exNameInput:focus{border-bottom:1px dashed var(--accent);}
+  .pencil{font-size:13px; color:var(--textFaint); flex-shrink:0;}
+  .blockChip{flex-shrink:0; margin-top:2px; width:26px; height:26px; border-radius:8px; background:var(--subBg);
+    border:1px solid var(--border); display:flex; align-items:center; justify-content:center;
+    font-family:'Bebas Neue',sans-serif; font-size:13px; color:var(--textMuted);}
+
+  /* current control */
+  .metricCluster{display:flex; align-items:center; gap:10px;}
+  .segmented{flex:1; display:flex; gap:6px; background:var(--subBg); padding:4px; border-radius:10px;}
+  .segBtn{flex:1; padding:8px 6px; border-radius:7px; border:none; cursor:pointer; font-family:Georgia,serif;
+    font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; background:transparent;
+    color:var(--textMuted); transition:all .15s ease;}
+  .segBtn.active{background:var(--accent); color:#fff;}
+  .timeSwitchWrap{display:flex; flex-direction:column; align-items:center; gap:3px; flex-shrink:0;}
+  .timeLabel{font-size:8px; font-weight:700; color:var(--textFaint); text-transform:uppercase; letter-spacing:.1em;}
+  .switch{width:40px; height:24px; border-radius:12px; background:var(--toggleBg); position:relative; cursor:pointer;
+    border:1px solid var(--border); transition:background .2s ease;}
+  .switch.on{background:var(--accent); border-color:transparent;}
+  .switch .knob{position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff;
+    transition:transform .2s cubic-bezier(.34,1.2,.64,1); box-shadow:0 1px 3px rgba(0,0,0,.3);}
+  .switch.on .knob{transform:translateX(16px);}
+
+  /* new proposed control */
+  .metricClusterNew{display:flex; align-items:center; gap:8px;}
+  .timePillWrap{background:var(--subBg); padding:4px; border-radius:10px; flex-shrink:0;}
+  .timeBtnLeft{padding:8px 14px; border-radius:7px; border:none; cursor:pointer; font-family:Georgia,serif;
+    font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; background:transparent;
+    color:var(--textMuted); transition:all .15s ease; white-space:nowrap;}
+  .timeBtnLeft.active{background:var(--accent); color:#fff;}
+  .plusSep{font-family:'Bebas Neue',sans-serif; font-size:24px; color:var(--textFaint); flex-shrink:0;}
+  .segmented3{flex:1; display:flex; gap:6px; background:var(--subBg); padding:4px; border-radius:10px;}
+
+  .listArea{display:flex; gap:10px; align-items:stretch;}
+  .listScroll{flex:1; overflow:hidden; max-height:230px; display:flex; flex-direction:column; gap:8px;}
+  .sliderTrack{width:14px; border-radius:7px; background:var(--subBg); position:relative; flex-shrink:0;}
+  .sliderThumb{position:absolute; left:50%; transform:translateX(-50%); width:26px; border-radius:8px;
+    background:var(--textFaint); cursor:grab; box-shadow:0 1px 4px rgba(0,0,0,.3);}
+  .sliderThumb:active{cursor:grabbing; background:var(--accent);}
+
+  .setRow{display:flex; align-items:center; gap:8px; background:var(--subBg); border-radius:10px; padding:8px;
+    border:1px solid transparent; transition:opacity .15s ease;}
+  .setRow.dragging{opacity:.5;}
+  .handle{flex-shrink:0; width:22px; height:36px; display:flex; align-items:center; justify-content:center;
+    color:var(--textFaint); cursor:grab; font-size:14px; letter-spacing:1px; line-height:1; touch-action:none;}
+  .handle:active{cursor:grabbing;}
+  .setIdx{flex-shrink:0; width:16px; font-size:11px; color:var(--textFaint); font-weight:600;}
+  .tileGroup{flex:1; display:grid; gap:6px;}
+  .tile{background:var(--cardBg); border-radius:8px; padding:6px 8px; min-width:0;}
+  .tileLabel{margin:0 0 1px; font-size:7px; font-weight:700; color:var(--textFaint); text-transform:uppercase; letter-spacing:.1em;}
+  .tileVal{font-family:'Bebas Neue',sans-serif; font-size:18px; letter-spacing:.02em; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .tileVal.faint{color:var(--textFaint); font-size:11px; font-family:Georgia,serif;}
+
+  .footer{display:flex; gap:8px;}
+  .btnDiscard{padding:12px 16px; border-radius:10px; border:1px solid var(--border); background:transparent;
+    color:var(--textMuted); font-family:Georgia,serif; font-weight:600; font-size:13px; cursor:pointer;}
+  .btnConfirm{flex:1; padding:12px; border-radius:10px; border:none; background:var(--accent); color:#fff;
+    font-family:Georgia,serif; font-weight:700; font-size:14px; cursor:pointer; box-shadow:0 3px 14px var(--accentGlow);}
+
+  .hint{position:absolute; top:14px; left:50%; transform:translateX(-50%); font-size:11px; font-weight:700;
+    letter-spacing:.08em; text-transform:uppercase; padding:5px 10px; border-radius:7px; opacity:0; transition:opacity .12s ease;
+    pointer-events:none;}
+  .hint.show{opacity:1;}
+  .hint.discard{background:rgba(239,68,68,.15); color:var(--danger);}
+  .hint.confirm{background:var(--confirmBg); color:var(--confirmText);}
+
+  .caption{margin-top:10px; font-size:11px; color:var(--textFaint); line-height:1.6; text-align:center;}
+
+  .historySection{margin-top:30px;}
+  .historyTitle{font-size:10px; font-weight:700; color:var(--textFaint); text-transform:uppercase; letter-spacing:.12em; margin:0 0 8px;}
+  .historyRow{display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:var(--confirmBg);
+    border:1px solid var(--confirmBorder); border-radius:10px; gap:12px; min-height:44px; margin-bottom:6px;}
+  .historyLeft{display:flex; align-items:center; gap:8px; min-width:0;}
+  .historyName{font-family:Georgia,serif; font-size:14px; font-weight:600; color:var(--confirmText); text-transform:capitalize;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .historyMeta{font-family:Georgia,serif; font-size:12px; color:var(--confirmMuted); flex-shrink:0; white-space:nowrap;}
+</style>
+
+<div class="wrap">
+  <div class="topbar">
+    <span class="label">Card preview · new metric model</span>
+    <button class="themeBtn" id="themeBtn" onclick="toggleTheme()">🌙</button>
+  </div>
+
+  <div class="styleToggleRow">
+    <span class="styleToggleLabel">Metric control style</span>
+    <div class="styleToggle" id="styleToggle"></div>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+
+  <div id="stage"></div>
+
+  <div class="historySection">
+    <p class="historyTitle">History feed — collapsed rows</p>
+    <div id="historyList"></div>
+  </div>
+
+  <p class="caption">
+    Web demo approximates gesture behavior. In RN, drag-reorder and swipe would use
+    react-native-gesture-handler + reanimated; the set list itself never scrolls by touch —
+    only the side slider moves it.
+  </p>
+</div>
+
+<script>
+// ---------- theme ----------
+let dark = true;
+function toggleTheme(){
+  dark = !dark;
+  document.body.setAttribute('data-theme', dark ? 'dark' : 'light');
+  document.getElementById('themeBtn').textContent = dark ? '🌙' : '☀️';
+}
+document.body.setAttribute('data-theme','dark');
+
+// ---------- scenario data ----------
+const scenarios = {
+  repsTime: {
+    name: 'Kettlebell Swing', block: 'A', metricType: 'reps', timeOn: true,
+    sets: [ {reps:15, time:30, weight:24}, {reps:15, time:30, weight:24}, {reps:12, time:28, weight:28} ]
+  },
+  distanceOnly: {
+    name: 'Row Erg', block: 'B', metricType: 'distance', timeOn: false,
+    sets: [ {distance:0.5, weight:0}, {distance:0.5, weight:0} ]
+  },
+  timeOnly: {
+    name: 'Plank', block: 'C', metricType: 'time', timeOn: true,
+    sets: [ {time:75, weight:0}, {time:90, weight:0}, {time:60, weight:0} ]
+  },
+  pyramid: {
+    name: 'Back Squat', block: 'A1', metricType: 'reps', timeOn: false,
+    sets: [
+      {reps:12, weight:40}, {reps:10, weight:50}, {reps:8, weight:60},
+      {reps:6, weight:70}, {reps:4, weight:80}, {reps:2, weight:85}
+    ]
+  }
+};
+const tabLabels = { repsTime:'Reps + Time', distanceOnly:'Distance only', timeOnly:'Time only', pyramid:'6-Set (scroll + reorder)' };
+
+let state = JSON.parse(JSON.stringify(scenarios));
+let activeKey = 'repsTime';
+let controlStyle = 'current'; // 'current' | 'new'
+
+// ---------- helpers ----------
+function formatTimeEdit(total){
+  const h = Math.floor(total/3600), m = Math.floor((total%3600)/60), s = total%60;
+  const ss = String(s).padStart(2,'0');
+  return h>0 ? `${h}:${String(m).padStart(2,'0')}:${ss}` : `${m}:${ss}`;
+}
+function formatTimeFeed(total){
+  if(total>=3600){
+    const h = Math.floor(total/3600), m = Math.floor((total%3600)/60);
+    return `${h}hr ${m}min`;
+  }
+  const m = Math.floor(total/60), s = total%60;
+  return s>0 ? `${m}min ${s}s` : `${m}min`;
+}
+function tilesForSet(set, metricType, timeOn){
+  const tiles = [];
+  if(metricType === 'reps') tiles.push({label:'REPS', val: set.reps});
+  if(metricType === 'distance') tiles.push({label:'KM', val: set.distance});
+  if(metricType === 'time' || timeOn) tiles.push({label:'TIME', val: formatTimeEdit(set.time || 0)});
+  const wt = set.weight || 0;
+  tiles.push({label: wt>0 ? 'WT · KG' : 'WEIGHT', val: wt>0 ? wt : '—', faint: wt===0});
+  return tiles;
+}
+
+// ---------- style toggle ----------
+function renderStyleToggle(){
+  const el = document.getElementById('styleToggle');
+  el.innerHTML = `
+    <button class="styleTab${controlStyle==='current'?' active':''}" onclick="setControlStyle('current')">Current</button>
+    <button class="styleTab${controlStyle==='new'?' active':''}" onclick="setControlStyle('new')">New idea</button>
+  `;
+}
+function setControlStyle(s){ controlStyle = s; renderStyleToggle(); renderCard(); }
+
+// ---------- tabs ----------
+function renderTabs(){
+  const tabs = document.getElementById('tabs');
+  tabs.innerHTML = '';
+  Object.keys(scenarios).forEach(key => {
+    const b = document.createElement('button');
+    b.className = 'tab' + (key === activeKey ? ' active' : '');
+    b.textContent = tabLabels[key];
+    b.onclick = () => { activeKey = key; renderTabs(); renderCard(); };
+    tabs.appendChild(b);
+  });
+}
+
+// ---------- metric control logic (current style: 2-way + double-tap-to-none) ----------
+function setMetricCurrent(type){
+  const s = state[activeKey];
+  if(s.metricType === type){
+    s.metricType = 'time';
+    s.timeOn = true;
+  } else {
+    s.metricType = type;
+  }
+  renderCard();
+}
+function toggleTimeCurrent(){
+  const s = state[activeKey];
+  if(s.metricType === 'time'){
+    s.metricType = 'reps';
+    s.timeOn = false;
+  } else {
+    s.timeOn = !s.timeOn;
+  }
+  renderCard();
+}
+
+// ---------- metric control logic (new style: Time left + explicit None) ----------
+function setMetricNew(type){
+  const s = state[activeKey];
+  if(type === 'none'){
+    if(!s.timeOn) s.timeOn = true; // none + time-off is invalid -> force time on
+    s.metricType = 'time';
+  } else {
+    s.metricType = type;
+  }
+  renderCard();
+}
+function toggleTimeNew(){
+  const s = state[activeKey];
+  if(s.timeOn){
+    if(s.metricType === 'time') s.metricType = 'reps'; // forced default, can't leave nothing active
+    s.timeOn = false;
+  } else {
+    s.timeOn = true;
+  }
+  renderCard();
+}
+
+function renderMetricCluster(s){
+  if(controlStyle === 'current'){
+    return `
+      <div class="metricCluster" data-no-swipe>
+        <div class="segmented">
+          <button class="segBtn${s.metricType==='reps' ? ' active':''}" onclick="setMetricCurrent('reps')">Reps</button>
+          <button class="segBtn${s.metricType==='distance' ? ' active':''}" onclick="setMetricCurrent('distance')">Distance</button>
+        </div>
+        <div class="timeSwitchWrap">
+          <span class="timeLabel">Time</span>
+          <div class="switch${(s.metricType==='time'||s.timeOn) ? ' on':''}" onclick="toggleTimeCurrent()">
+            <div class="knob"></div>
+          </div>
+        </div>
+      </div>`;
+  }
+  // new style
+  const timeOn = s.metricType === 'time' || s.timeOn;
+  return `
+    <div class="metricClusterNew" data-no-swipe>
+      <div class="timePillWrap">
+        <button class="timeBtnLeft${timeOn ? ' active':''}" onclick="toggleTimeNew()">Time</button>
+      </div>
+      <span class="plusSep">+</span>
+      <div class="segmented3">
+        <button class="segBtn${s.metricType==='reps' ? ' active':''}" onclick="setMetricNew('reps')">Reps</button>
+        <button class="segBtn${s.metricType==='distance' ? ' active':''}" onclick="setMetricNew('distance')">Distance</button>
+        <button class="segBtn${s.metricType==='time' ? ' active':''}" onclick="setMetricNew('none')">None</button>
+      </div>
+    </div>`;
+}
+
+// ---------- card ----------
+function renderCard(){
+  const s = state[activeKey];
+  const stage = document.getElementById('stage');
+
+  let rowsHtml = '';
+  s.sets.forEach((set, i) => {
+    const tiles = tilesForSet(set, s.metricType, s.timeOn);
+    const tilesHtml = tiles.map(t => `
+      <div class="tile">
+        <p class="tileLabel">${t.label}</p>
+        <p class="tileVal${t.faint ? ' faint' : ''}">${t.val}</p>
+      </div>`).join('');
+    rowsHtml += `
+      <div class="setRow" data-idx="${i}">
+        <div class="handle" data-no-swipe onpointerdown="onHandleDown(event, ${i})">⋮⋮</div>
+        <span class="setIdx">${i+1}</span>
+        <div class="tileGroup" style="grid-template-columns: repeat(${tiles.length}, 1fr);">${tilesHtml}</div>
+      </div>`;
+  });
+
+  stage.innerHTML = `
+    <div class="card" id="cardEl">
+      <div class="swipeTint" id="swipeTint"></div>
+      <div class="hint" id="hint"></div>
+
+      <div class="cardHeaderRow">
+        <div style="flex:1; min-width:0;">
+          <p class="exLabel">Exercise</p>
+          <div class="exNameRow" data-no-swipe>
+            <input class="exNameInput" id="exNameInput" value="${s.name}" oninput="onNameInput(event)" />
+            <span class="pencil">✎</span>
+          </div>
+        </div>
+        <div class="blockChip">${s.block}</div>
+      </div>
+
+      ${renderMetricCluster(s)}
+
+      <div class="listArea">
+        <div class="listScroll" id="listScroll">${rowsHtml}</div>
+        <div class="sliderTrack" id="sliderTrack" data-no-swipe>
+          <div class="sliderThumb" id="sliderThumb" data-no-swipe onpointerdown="onThumbDown(event)"></div>
+        </div>
+      </div>
+
+      <div class="footer" data-no-swipe>
+        <button class="btnDiscard">Discard</button>
+        <button class="btnConfirm">Confirm ✓</button>
+      </div>
+    </div>
+  `;
+
+  requestAnimationFrame(setupSlider);
+  attachSwipe();
+}
+
+function onNameInput(e){
+  state[activeKey].name = e.target.value; // no re-render — keeps focus/caret intact
+}
+
+// ---------- reorder (pointer-based, handle-only, survives re-renders) ----------
+let dragIdx = null;
+function onHandleDown(e, idx){
+  e.stopPropagation();
+  dragIdx = idx;
+  const row = document.querySelector(`.setRow[data-idx="${idx}"]`);
+  if(row) row.classList.add('dragging');
+
+  function onMove(ev){
+    const rows = Array.from(document.querySelectorAll('.setRow'));
+    for(const r of rows){
+      const rect = r.getBoundingClientRect();
+      const rIdx = parseInt(r.dataset.idx, 10);
+      if(ev.clientY > rect.top && ev.clientY < rect.bottom && rIdx !== dragIdx){
+        const s = state[activeKey];
+        const [moved] = s.sets.splice(dragIdx, 1);
+        s.sets.splice(rIdx, 0, moved);
+        dragIdx = rIdx;
+        renderCard();
+        const newRow = document.querySelector(`.setRow[data-idx="${dragIdx}"]`);
+        if(newRow) newRow.classList.add('dragging');
+        break;
+      }
+    }
+  }
+  function onUp(){
+    document.querySelectorAll('.setRow').forEach(r => r.classList.remove('dragging'));
+    dragIdx = null;
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+  }
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
+// ---------- custom scroll slider (list has overflow:hidden — only the slider moves it) ----------
+function setupSlider(){
+  const scrollEl = document.getElementById('listScroll');
+  const track = document.getElementById('sliderTrack');
+  const thumb = document.getElementById('sliderThumb');
+  if(!scrollEl || !track || !thumb) return;
+  const trackH = track.clientHeight;
+  const contentH = scrollEl.scrollHeight;
+  const visibleH = scrollEl.clientHeight;
+
+  if(contentH <= visibleH){
+    track.style.opacity = '0.25'; thumb.style.height = trackH + 'px'; thumb.style.top = '0px';
+    window.__sliderCtx = null;
+    return;
+  }
+  track.style.opacity = '1';
+  const thumbH = Math.max(28, (visibleH / contentH) * trackH);
+  const maxThumbTravel = trackH - thumbH;
+  const maxScroll = contentH - visibleH;
+  thumb.style.height = thumbH + 'px';
+
+  function setScroll(ratio){
+    ratio = Math.min(1, Math.max(0, ratio));
+    scrollEl.scrollTop = ratio * maxScroll;
+    thumb.style.top = (ratio * maxThumbTravel) + 'px';
+  }
+  setScroll(0);
+  window.__sliderCtx = { maxThumbTravel, setScroll };
+}
+function onThumbDown(e){
+  e.stopPropagation();
+  const ctx = window.__sliderCtx;
+  if(!ctx) return;
+  const startY = e.clientY;
+  const thumb = document.getElementById('sliderThumb');
+  const startTop = parseFloat(thumb.style.top || '0');
+  function onMove(ev){
+    const dy = ev.clientY - startY;
+    const newTop = startTop + dy;
+    const ratio = ctx.maxThumbTravel > 0 ? newTop / ctx.maxThumbTravel : 0;
+    ctx.setScroll(ratio);
+  }
+  function onUp(){
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+  }
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
+// ---------- whole-card swipe (blocked only on handle, slider, name field, metric controls, footer buttons) ----------
+let swipe = { active:false, sx:0, sy:0, dx:0, dy:0 };
+function attachSwipe(){
+  const card = document.getElementById('cardEl');
+  const tint = document.getElementById('swipeTint');
+  const hint = document.getElementById('hint');
+  if(!card) return;
+
+  card.addEventListener('pointerdown', (e) => {
+    if(e.target.closest('[data-no-swipe]')) return;
+    swipe.active = true; swipe.sx = e.clientX; swipe.sy = e.clientY; swipe.dx = 0; swipe.dy = 0;
+    card.setPointerCapture(e.pointerId);
+  });
+  card.addEventListener('pointermove', (e) => {
+    if(!swipe.active) return;
+    swipe.dx = e.clientX - swipe.sx;
+    swipe.dy = e.clientY - swipe.sy;
+    card.style.transform = `translate(${swipe.dx*0.5}px, ${swipe.dy*0.3}px) rotate(${swipe.dx*0.02}deg)`;
+    if(swipe.dx > 40 && swipe.dx > Math.abs(swipe.dy)){
+      tint.style.background = 'rgba(239,68,68,0.10)'; tint.style.opacity = '1';
+      hint.className = 'hint show discard'; hint.textContent = 'Discard →';
+    } else if(swipe.dy < -40 && Math.abs(swipe.dy) > Math.abs(swipe.dx)){
+      tint.style.background = 'rgba(34,197,94,0.10)'; tint.style.opacity = '1';
+      hint.className = 'hint show confirm'; hint.textContent = '↑ Confirm ✓';
+    } else {
+      tint.style.opacity = '0'; hint.className = 'hint';
+    }
+  });
+  const end = () => {
+    if(!swipe.active) return;
+    swipe.active = false;
+    card.style.transition = 'transform .25s cubic-bezier(.22,1,.36,1)';
+    card.style.transform = 'none';
+    tint.style.opacity = '0'; hint.className = 'hint';
+    setTimeout(() => { card.style.transition = ''; }, 260);
+  };
+  card.addEventListener('pointerup', end);
+  card.addEventListener('pointercancel', end);
+}
+
+// ---------- history feed ----------
+const historyExamples = [
+  { name:'Deadlift', sets:4, single:false },
+  { name:'Pull-up', sets:1, single:true, kind:'reps', val:12 },
+  { name:'Row Erg', sets:1, single:true, kind:'distance', val:5.2 },
+  { name:'Plank', sets:1, single:true, kind:'time', val:195 },
+  { name:'Morning Run', sets:1, single:true, kind:'time', val:4520 },
+];
+function renderHistory(){
+  const el = document.getElementById('historyList');
+  el.innerHTML = historyExamples.map(h => {
+    let meta;
+    if(!h.single){
+      meta = `${h.sets} sets`;
+    } else if(h.kind === 'reps'){
+      meta = `${h.val} reps`;
+    } else if(h.kind === 'distance'){
+      meta = `${h.val} km`;
+    } else {
+      meta = formatTimeFeed(h.val);
+    }
+    return `
+      <div class="historyRow">
+        <div class="historyLeft">
+          <span style="color:var(--accent); font-size:12px;">✓</span>
+          <span class="historyName">${h.name}</span>
+        </div>
+        <span class="historyMeta">${meta}</span>
+      </div>`;
+  }).join('');
+}
+
+// ---------- init ----------
+renderStyleToggle();
+renderTabs();
+renderCard();
+renderHistory();
+</script>

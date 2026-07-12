@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Eco Track Chat Prototype</title>
+  <style>
+    :root {
+      --bg: #2b2a27;
+      --card: #302f2c;
+      --sub: #252420;
+      --bubble: #3a3936;
+      --text: #eeeeee;
+      --muted: #9a9893;
+      --faint: #696762;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-subtle: rgba(255, 255, 255, 0.04);
+      --accent: #22c55e;
+      --accent-glow: rgba(34, 197, 94, 0.2);
+      --header: rgba(43, 42, 39, 0.88);
+      --nav: #201f1c;
+      --frame: #151412;
+    }
+    .app[data-theme="light"] {
+      --bg: #f5f5f0;
+      --card: #ffffff;
+      --sub: #eeede7;
+      --bubble: #e8e5dd;
+      --text: #1a1a18;
+      --muted: #6b6a68;
+      --faint: #a19e98;
+      --border: rgba(0, 0, 0, 0.08);
+      --border-subtle: rgba(0, 0, 0, 0.04);
+      --accent: #16a34a;
+      --accent-glow: rgba(22, 163, 74, 0.18);
+      --header: rgba(245, 245, 240, 0.9);
+      --nav: #ebe9e2;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 20% 10%, rgba(34,197,94,.06), transparent 28rem),
+        var(--frame);
+      color: var(--text);
+      font-family: Georgia, "Times New Roman", serif;
+    }
+    button, textarea { font: inherit; }
+    button { color: inherit; }
+
+    .workbench {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(260px, 330px) 390px;
+      justify-content: center;
+      align-items: center;
+      gap: clamp(40px, 7vw, 100px);
+      padding: 40px;
+    }
+
+    .controls { align-self: center; }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    .controls h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1.05;
+      font-weight: 500;
+    }
+    .controls-copy {
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+    .state-list { display: grid; gap: 8px; }
+    .state-button {
+      width: 100%;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: rgba(255,255,255,.025);
+      color: var(--muted);
+      text-align: left;
+      cursor: pointer;
+      transition: border-color .18s ease, background .18s ease, color .18s ease;
+    }
+    .state-button:hover { border-color: rgba(34,197,94,.35); color: var(--text); }
+    .state-button.active {
+      border-color: rgba(34,197,94,.45);
+      background: rgba(34,197,94,.08);
+      color: var(--text);
+    }
+    .state-number {
+      width: 22px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      background: var(--sub);
+      color: var(--faint);
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .state-button.active .state-number { background: var(--accent); color: #fff; }
+    .state-title { display: block; font-size: 13px; font-weight: 600; }
+    .state-detail { display: block; margin-top: 2px; color: var(--faint); font-size: 10px; }
+
+    .device {
+      width: 390px;
+      height: min(844px, calc(100vh - 56px));
+      min-height: 620px;
+      padding: 7px;
+      position: relative;
+      border: 1px solid rgba(255,255,255,.13);
+      border-radius: 42px;
+      background: #080807;
+      box-shadow: 0 32px 90px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,255,255,.04);
+    }
+    .device::before {
+      content: "";
+      position: absolute;
+      z-index: 60;
+      top: 14px;
+      left: 50%;
+      width: 86px;
+      height: 22px;
+      border-radius: 999px;
+      background: #080807;
+      transform: translateX(-50%);
+      pointer-events: none;
+    }
+    .app {
+      width: 100%;
+      height: 100%;
+      position: relative;
+      overflow: hidden;
+      border-radius: 35px;
+      background: var(--bg);
+    }
+
+    .header {
+      position: absolute;
+      inset: 0 0 auto;
+      z-index: 30;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 56px;
+      background: var(--header);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+    .header-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .01em; }
+    .avatar {
+      position: absolute;
+      top: 7px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    .avatar {
+      left: 12px;
+      width: 38px;
+      height: 38px;
+      border: 2px solid var(--accent);
+      background: var(--bubble);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .04em;
+    }
+
+    .feed {
+      position: absolute;
+      inset: 52px 0 56px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: none;
+      padding: 32px 16px 132px;
+      scroll-behavior: smooth;
+    }
+    .feed::-webkit-scrollbar { display: none; }
+    .empty-state { margin: 30px auto 0; max-width: 300px; text-align: center; animation: fade-up .35s ease both; }
+    .empty-mark {
+      width: 68px;
+      height: 68px;
+      margin: 0 auto 22px;
+      position: relative;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(34,197,94,.28);
+      border-radius: 50%;
+      color: var(--accent);
+      font-size: 21px;
+      font-style: italic;
+      box-shadow: 0 0 0 8px rgba(34,197,94,.035), 0 0 36px rgba(34,197,94,.08);
+    }
+    .empty-mark::after { content: ""; position: absolute; right: 6px; bottom: 8px; width: 11px; height: 18px; border: 1px solid var(--accent); border-left: 0; border-bottom: 0; border-radius: 100% 0; transform: rotate(20deg); opacity: .75; }
+    .empty-kicker { margin: 0 0 8px; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+    .empty-state h3 { margin: 0 0 9px; font-size: 24px; font-weight: 500; line-height: 1.2; }
+    .empty-copy { margin: 0 auto 24px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .starters { display: grid; gap: 7px; text-align: left; }
+    .starter {
+      width: 100%;
+      padding: 11px 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255,255,255,.018);
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .starter:hover { border-color: rgba(34,197,94,.25); color: var(--text); }
+    .starter span:last-child { color: var(--faint); font-size: 16px; }
+    .turn { margin-bottom: 24px; animation: fade-up .28s ease both; }
+    .user-line { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+    .user-wrap { max-width: 78%; }
+    .user-bubble {
+      padding: 11px 16px;
+      border-radius: 18px 18px 4px 18px;
+      background: var(--bubble);
+      box-shadow: 0 1px 3px var(--border-subtle);
+    }
+    .user-bubble p, .eco-reply { margin: 0; font-size: 15px; font-weight: 400; }
+    .user-bubble p { line-height: 1.7; }
+    .eco-reply { line-height: 1.75; }
+    .message-time {
+      display: block;
+      margin-top: 5px;
+      color: var(--faint);
+      font-size: 10px;
+      line-height: 1;
+      letter-spacing: .01em;
+    }
+    .user-time { padding-right: 4px; text-align: right; }
+    .eco-tools { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
+    .eco-tools .message-time { margin: 0; }
+    .feedback { display: flex; align-items: center; gap: 4px; }
+    .feedback button {
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--faint);
+      cursor: pointer;
+    }
+    .feedback button:hover, .feedback button.selected { background: rgba(255,255,255,.05); color: var(--muted); }
+    .feedback svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+    .notification, .sticky-pending {
+      width: 100%;
+      min-height: 52px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card);
+      color: var(--text);
+      box-shadow: 0 4px 16px rgba(0,0,0,.2);
+      text-align: left;
+      cursor: pointer;
+    }
+    .notification { margin-top: 10px; }
+    .notification-dot {
+      position: relative;
+      width: 10px;
+      height: 10px;
+      flex: 0 0 10px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .notification-dot::before {
+      content: "";
+      position: absolute;
+      inset: -5px;
+      border-radius: 50%;
+      background: var(--accent);
+      opacity: .2;
+      animation: ripple 2.2s infinite;
+    }
+    .notification-label { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
+    .chevron { color: var(--faint); font-size: 18px; }
+    .sticky-pending {
+      position: absolute;
+      z-index: 25;
+      top: 60px;
+      left: 12px;
+      width: calc(100% - 24px);
+      min-height: 44px;
+      padding: 8px 13px;
+      border-color: rgba(34,197,94,.2);
+      background: rgba(48,47,44,.96);
+      box-shadow: 0 8px 24px rgba(0,0,0,.32);
+      transform: translateY(-12px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s ease, transform .2s ease;
+      backdrop-filter: blur(14px);
+    }
+    .sticky-pending.visible { opacity: 1; transform: none; pointer-events: auto; }
+    .sticky-pending .notification-label { font-size: 13px; }
+
+    .history-row {
+      margin-top: 10px;
+      min-height: 44px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid #14532d;
+      border-radius: 10px;
+      background: #0d1f13;
+    }
+    .history-left { min-width: 0; display: flex; align-items: center; gap: 8px; }
+    .history-check { color: var(--accent); font-size: 12px; }
+    .history-name { overflow: hidden; color: #4ade80; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .history-meta { flex-shrink: 0; color: #2f8550; font-size: 12px; }
+
+    .typing { height: 24px; display: flex; align-items: center; gap: 5px; }
+    .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); animation: bounce 1.2s infinite; }
+    .typing span:nth-child(2) { animation-delay: .2s; }
+    .typing span:nth-child(3) { animation-delay: .4s; }
+    .reply-error { padding: 12px 13px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.018); }
+    .reply-error p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .retry { margin-top: 9px; padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; }
+
+    .composer-dock { position: absolute; inset: auto 0 56px; z-index: 20; }
+    .composer-fade { position: absolute; inset: auto 0 0; height: 126px; background: linear-gradient(to top, var(--bg) 58%, transparent); pointer-events: none; }
+    .composer-wrap { position: relative; padding: 0 16px 14px; }
+    .composer {
+      min-height: 58px;
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      padding: 10px 10px 10px 16px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--sub);
+      box-shadow: 0 8px 28px rgba(0,0,0,.3);
+    }
+    textarea {
+      display: block;
+      width: 100%;
+      min-height: 36px;
+      max-height: 108px;
+      padding: 5px 0;
+      border: 0;
+      outline: 0;
+      resize: none;
+      overflow-y: auto;
+      background: transparent;
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+    textarea::placeholder { color: var(--muted); opacity: 1; }
+    .send {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 38px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      border-radius: 11px;
+      background: var(--card);
+      color: var(--faint);
+      font-size: 17px;
+      cursor: default;
+      transition: background .16s ease, color .16s ease, transform .16s ease;
+    }
+    .send.ready { background: var(--accent); color: #fff; cursor: pointer; box-shadow: 0 2px 8px var(--accent-glow); }
+    .send.ready:active { transform: scale(.95); }
+
+    .bottom-nav {
+      position: absolute;
+      inset: auto 0 0;
+      z-index: 30;
+      height: 56px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      background: var(--nav);
+      border-top: 1px solid rgba(255,255,255,.03);
+    }
+    .nav-item { display: grid; place-content: center; justify-items: center; gap: 1px; color: #aaa69f; font-size: 10px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; }
+    .nav-icon { width: 19px; height: 19px; display: grid; place-items: center; }
+    .nav-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .nav-item.active { color: var(--accent); }
+
+    .settings-screen {
+      position: absolute;
+      z-index: 35;
+      inset: 0;
+      overflow-y: auto;
+      scrollbar-width: none;
+      background: var(--bg);
+      transform: translateX(-100%);
+      visibility: hidden;
+      transition: transform .28s cubic-bezier(.22,1,.36,1), visibility .28s;
+    }
+    .settings-screen.open { transform: none; visibility: visible; }
+    .settings-screen::-webkit-scrollbar { display: none; }
+    .settings-header {
+      position: sticky;
+      z-index: 2;
+      top: 0;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--header);
+      backdrop-filter: blur(16px);
+    }
+    .back-button {
+      position: absolute;
+      left: 12px;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      background: var(--bubble);
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .settings-content { padding: 16px 16px 34px; }
+    .profile-card {
+      padding: 21px;
+      display: grid;
+      justify-items: center;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--card);
+      box-shadow: 0 8px 22px rgba(0,0,0,.18);
+    }
+    .profile-avatar { width: 66px; height: 66px; display: grid; place-items: center; border-radius: 50%; background: var(--bubble); font-size: 20px; font-weight: 700; }
+    .profile-card h3 { margin: 13px 0 4px; font-size: 17px; }
+    .profile-email { margin: 0; color: var(--muted); font-size: 12px; }
+    .tier { margin-top: 13px; padding: 3px 10px; border-radius: 999px; background: rgba(34,197,94,.1); color: var(--accent); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+    .settings-section { margin-top: 20px; }
+    .section-label { margin: 0 0 9px; color: var(--faint); font-size: 9px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
+    .settings-group { overflow: hidden; border: 1px solid var(--border); border-radius: 13px; background: var(--card); box-shadow: 0 5px 16px rgba(0,0,0,.12); }
+    .setting-row { min-height: 57px; padding: 10px 14px; display: flex; align-items: center; gap: 11px; border: 0; border-bottom: 1px solid var(--border); background: transparent; text-align: left; width: 100%; }
+    .setting-row:last-child { border-bottom: 0; }
+    button.setting-row { cursor: pointer; }
+    .setting-icon { width: 28px; height: 28px; flex: 0 0 28px; display: grid; place-items: center; border-radius: 8px; background: rgba(34,197,94,.07); font-size: 14px; }
+    .setting-main { flex: 1; min-width: 0; }
+    .setting-title { display: block; color: var(--text); font-size: 14px; font-weight: 600; }
+    .setting-sub { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .setting-chevron { color: var(--faint); font-size: 17px; }
+    .switch { width: 44px; height: 24px; padding: 2px; border: 0; border-radius: 999px; background: var(--accent); cursor: pointer; }
+    .switch-knob { width: 20px; height: 20px; display: block; border-radius: 50%; background: white; transform: translateX(20px); transition: transform .2s ease; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+    .app[data-theme="light"] .switch-knob { transform: none; }
+    .unit-control { display: flex; padding: 3px; border-radius: 8px; background: var(--sub); }
+    .unit-control button { min-width: 37px; height: 28px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 600; cursor: pointer; }
+    .unit-control button.active { background: var(--accent); color: #fff; }
+    .usage-track { width: 50px; height: 4px; overflow: hidden; border-radius: 99px; background: var(--sub); }
+    .usage-track span { display: block; width: 8%; height: 100%; background: var(--accent); }
+    .upgrade-row { background: rgba(34,197,94,.06); }
+    .upgrade-row .setting-title, .upgrade-row .setting-chevron { color: var(--accent); }
+    .sign-out { width: 100%; min-height: 48px; border: 1px solid rgba(239,68,68,.2); border-radius: 10px; background: rgba(239,68,68,.045); color: #d98282; font-size: 13px; font-weight: 600; cursor: pointer; transition: background .18s ease, border-color .18s ease; }
+    .sign-out:hover { border-color: rgba(239,68,68,.32); background: rgba(239,68,68,.075); }
+    .version { margin: 14px 0 0; color: var(--faint); font-size: 10px; text-align: center; }
+
+    .error-screen {
+      position: absolute;
+      z-index: 55;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 30px;
+      background: var(--bg);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(8px);
+      transition: opacity .22s ease, transform .22s ease, visibility .22s;
+    }
+    .error-screen.open { opacity: 1; visibility: visible; transform: none; }
+    .error-content { width: 100%; max-width: 290px; text-align: center; }
+    .offline-mark {
+      width: 76px;
+      height: 76px;
+      margin: 0 auto 24px;
+      position: relative;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      background: var(--card);
+      color: var(--muted);
+      box-shadow: 0 10px 30px rgba(0,0,0,.2);
+    }
+    .offline-mark svg { width: 34px; height: 34px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .error-kicker { margin: 0 0 8px; color: var(--faint); font-size: 9px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
+    .error-content h2 { margin: 0 0 10px; font-size: 25px; font-weight: 500; }
+    .error-copy { margin: 0 auto 22px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+    .retry-connection { width: 100%; min-height: 46px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 3px 14px var(--accent-glow); }
+    .retry-connection.loading { color: transparent; pointer-events: none; position: relative; }
+    .retry-connection.loading::after { content: ""; position: absolute; top: 50%; left: 50%; width: 15px; height: 15px; margin: -8px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
+    .local-note { margin: 14px 0 0; color: var(--faint); font-size: 10px; line-height: 1.5; }
+
+    .sheet-backdrop {
+      position: absolute;
+      z-index: 40;
+      inset: 0;
+      display: flex;
+      align-items: flex-end;
+      padding: 12px;
+      background: rgba(0,0,0,.55);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s ease;
+    }
+    .sheet-backdrop.open { opacity: 1; pointer-events: auto; }
+    .sheet {
+      width: 100%;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--card);
+      box-shadow: 0 24px 50px rgba(0,0,0,.45);
+      transform: translateY(20px);
+      transition: transform .24s ease;
+    }
+    .sheet-backdrop.open .sheet { transform: none; }
+    .sheet-label { margin: 0 0 3px; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    .sheet h2 { margin: 0 0 16px; font-size: 28px; font-weight: 500; letter-spacing: .03em; }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-bottom: 16px; }
+    .metric { padding: 10px; border-radius: 10px; background: var(--sub); }
+    .metric small { display: block; margin-bottom: 3px; color: var(--faint); font-size: 8px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+    .metric strong { font-size: 18px; font-weight: 500; }
+    .sheet-actions { display: flex; gap: 8px; }
+    .sheet-actions button { min-height: 42px; padding: 0 12px; border-radius: 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .discard { border: 1px solid var(--border); background: transparent; color: var(--muted); }
+    .confirm { flex: 1; border: 0; background: var(--accent); color: #fff; box-shadow: 0 3px 14px var(--accent-glow); }
+
+    @keyframes fade-up { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+    @keyframes ripple { 0%, 100% { opacity: .2; transform: scale(1); } 50% { opacity: .07; transform: scale(1.8); } }
+    @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-4px); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 760px) {
+      body { background: var(--bg); }
+      .workbench { display: block; min-height: 100dvh; padding: 0; }
+      .controls { display: none; }
+      .device { width: 100%; height: 100dvh; min-height: 0; padding: 0; border: 0; border-radius: 0; box-shadow: none; }
+      .device::before { display: none; }
+      .app { border-radius: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="workbench">
+    <aside class="controls" aria-label="Prototype states">
+      <p class="eyebrow">Interactive prototype</p>
+      <h1>Chat states</h1>
+      <p class="controls-copy">Move through the conversation lifecycle, or type directly in the phone to test the composer.</p>
+      <div class="state-list">
+        <button class="state-button" data-state="open"><span class="state-number">01</span><span><span class="state-title">App opened</span><span class="state-detail">Clean session and ready composer</span></span></button>
+        <button class="state-button" data-state="sent"><span class="state-number">02</span><span><span class="state-title">Message sent</span><span class="state-detail">User message and Eco typing</span></span></button>
+        <button class="state-button" data-state="failed"><span class="state-number">03</span><span><span class="state-title">Reply failed</span><span class="state-detail">Calm retry state without losing input</span></span></button>
+        <button class="state-button" data-state="replied"><span class="state-number">04</span><span><span class="state-title">Eco replied</span><span class="state-detail">Integrated response and feedback</span></span></button>
+        <button class="state-button active" data-state="pending"><span class="state-number">05</span><span><span class="state-title">Exercise detected</span><span class="state-detail">Quiet pending confirmation row</span></span></button>
+        <button class="state-button" data-state="scrolled"><span class="state-number">06</span><span><span class="state-title">Continued conversation</span><span class="state-detail">Pending row becomes a sticky shortcut</span></span></button>
+        <button class="state-button" data-state="confirmed"><span class="state-number">07</span><span><span class="state-title">Exercise confirmed</span><span class="state-detail">Compact history placed in the feed</span></span></button>
+        <button class="state-button" id="showSettings"><span class="state-number">08</span><span><span class="state-title">Settings screen</span><span class="state-detail">Profile, appearance, units, and account</span></span></button>
+        <button class="state-button" id="showOffline"><span class="state-number">09</span><span><span class="state-title">No internet</span><span class="state-detail">Reusable full-page error treatment</span></span></button>
+      </div>
+    </aside>
+
+    <section class="device" aria-label="Mobile preview">
+      <div class="app">
+        <header class="header">
+          <button class="avatar" aria-label="Open settings">TB</button>
+          <h2 class="header-title">Today's Session</h2>
+        </header>
+
+        <button class="sticky-pending" id="stickyPending" aria-label="Open pending exercise">
+          <span class="notification-dot" aria-hidden="true"></span>
+          <span class="notification-label">1 exercise ready to confirm</span>
+          <span class="chevron" aria-hidden="true">›</span>
+        </button>
+
+        <section class="feed" id="feed" aria-live="polite" aria-label="Workout conversation"></section>
+
+        <div class="composer-dock">
+          <div class="composer-fade"></div>
+          <div class="composer-wrap">
+            <div class="composer">
+              <textarea id="composer" rows="1" aria-label="Message Eco" placeholder="What did you train today?"></textarea>
+              <button class="send" id="send" aria-label="Send message">↑</button>
+            </div>
+          </div>
+        </div>
+
+        <nav class="bottom-nav" aria-label="Primary navigation">
+          <div class="nav-item active"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18.5 3 21v-5.2A8 8 0 1 1 6.2 19H5Z"/></svg></span><span>Chat</span></div>
+          <div class="nav-item"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10M7 8h10M6 3v18h12V3M9 13h6M9 17h4"/></svg></span><span>History</span></div>
+          <div class="nav-item"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16M6 17V9h3v8m3 0V4h3v13m3 0v-5h2v5"/></svg></span><span>Report</span></div>
+        </nav>
+
+        <div class="sheet-backdrop" id="sheetBackdrop">
+          <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="exerciseTitle">
+            <p class="sheet-label">Exercise</p>
+            <h2 id="exerciseTitle">Run</h2>
+            <div class="metrics">
+              <div class="metric"><small>Distance</small><strong>3 km</strong></div>
+              <div class="metric"><small>Duration</small><strong>15 min</strong></div>
+              <div class="metric"><small>Pace</small><strong>5:00</strong></div>
+            </div>
+            <div class="sheet-actions">
+              <button class="discard" id="closeSheet">Not now</button>
+              <button class="discard" id="askEco">Ask Eco</button>
+              <button class="confirm" id="confirmExercise">Confirm exercise</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="settings-screen" id="settingsScreen" aria-label="Settings">
+          <header class="settings-header">
+            <button class="back-button" id="closeSettings" aria-label="Back to chat">‹</button>
+            <h2 class="header-title">Settings</h2>
+          </header>
+          <div class="settings-content">
+            <section class="profile-card">
+              <div class="profile-avatar">TB</div>
+              <h3>Tom B.</h3>
+              <p class="profile-email">tom2binoy@gmail.com</p>
+              <span class="tier">Free tier</span>
+            </section>
+
+            <section class="settings-section">
+              <p class="section-label">Profile</p>
+              <div class="settings-group">
+                <button class="setting-row"><span class="setting-icon">✏️</span><span class="setting-main"><span class="setting-title">Edit profile</span><span class="setting-sub">Name, photo, email</span></span><span class="setting-chevron">›</span></button>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <p class="section-label">Preferences</p>
+              <div class="settings-group">
+                <div class="setting-row"><span class="setting-icon">🌙</span><span class="setting-main"><span class="setting-title">Dark mode</span><span class="setting-sub">Use Eco Track's dark appearance</span></span><button class="switch" id="themeSwitch" role="switch" aria-checked="true"><span class="switch-knob"></span></button></div>
+                <div class="setting-row"><span class="setting-icon">⚖️</span><span class="setting-main"><span class="setting-title">Weight unit</span></span><div class="unit-control" id="unitControl"><button class="active" data-unit="kg">kg</button><button data-unit="lbs">lbs</button></div></div>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <p class="section-label">Account</p>
+              <div class="settings-group">
+                <div class="setting-row"><span class="setting-icon">📊</span><span class="setting-main"><span class="setting-title">Daily usage</span><span class="setting-sub">2 of 25 messages today</span></span><span class="usage-track"><span></span></span></div>
+                <button class="setting-row upgrade-row"><span class="setting-icon">⭐</span><span class="setting-main"><span class="setting-title">Upgrade to Pro</span><span class="setting-sub">Unlimited · smarter AI · £4/mo</span></span><span class="setting-chevron">›</span></button>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <p class="section-label">Support</p>
+              <div class="settings-group">
+                <button class="setting-row"><span class="setting-icon">🐛</span><span class="setting-main"><span class="setting-title">Report a bug / feedback</span></span><span class="setting-chevron">›</span></button>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <button class="sign-out">Sign out</button>
+              <p class="version">Eco Track v0.4 · Week 4 build</p>
+            </section>
+          </div>
+        </section>
+
+        <section class="error-screen" id="offlineScreen" aria-labelledby="offlineTitle">
+          <div class="error-content">
+            <div class="offline-mark" aria-hidden="true">
+              <svg viewBox="0 0 40 40"><path d="M5 14c8.4-7.2 21.6-7.2 30 0M10 20c5.6-4.8 14.4-4.8 20 0M15.5 26c2.6-2.2 6.4-2.2 9 0M20 32h.01M6 5l28 30"/></svg>
+            </div>
+            <p class="error-kicker">Connection interrupted</p>
+            <h2 id="offlineTitle">You're offline.</h2>
+            <p class="error-copy">Eco needs an internet connection to reply. Check your connection and try again when you're ready.</p>
+            <button class="retry-connection" id="retryConnection">Try again</button>
+            <p class="local-note">Your typed workout and pending exercises are safe on this device.</p>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const feed = document.getElementById('feed');
+    const composer = document.getElementById('composer');
+    const send = document.getElementById('send');
+    const stickyPending = document.getElementById('stickyPending');
+    const sheetBackdrop = document.getElementById('sheetBackdrop');
+    const app = document.querySelector('.app');
+    const settingsScreen = document.getElementById('settingsScreen');
+    const offlineScreen = document.getElementById('offlineScreen');
+    let currentState = 'pending';
+    let hasPending = true;
+
+    const icons = {
+      up: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10v11H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3Zm0 10h10.1a2 2 0 0 0 1.9-1.4l2.2-7A2 2 0 0 0 19.3 9H15l.7-3.5A2.1 2.1 0 0 0 11.8 4L7 10Z"/></svg>',
+      down: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14V3H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3Zm0-10h10.1A2 2 0 0 1 19 5.4l2.2 7a2 2 0 0 1-1.9 2.6H15l.7 3.5a2.1 2.1 0 0 1-3.9 1.5L7 14Z"/></svg>'
+    };
+
+    function feedback(time) {
+      return `<div class="eco-tools"><span class="message-time">${time}</span><div class="feedback" aria-label="Rate Eco's reply"><button aria-label="Good response">${icons.up}</button><button aria-label="Could be better">${icons.down}</button></div></div>`;
+    }
+
+    function userMessage(text, time) {
+      return `<div class="user-line"><div class="user-wrap"><div class="user-bubble"><p>${text}</p></div><span class="message-time user-time">${time}</span></div></div>`;
+    }
+
+    function firstTurn(withReply = true) {
+      return `<article class="turn">${userMessage('Hello there Eco', '09:41')}${withReply ? `<p class="eco-reply">Hello! I'm ready to log your workout. Please let me know your exercises, sets, and reps/time/distance so I can track your progress.</p>${feedback('09:41')}` : '<div class="typing" aria-label="Eco is typing"><span></span><span></span><span></span></div>'}</article>`;
+    }
+
+    function pendingTurn(confirmed = false, count = 1) {
+      const card = confirmed
+        ? '<div class="history-row"><div class="history-left"><span class="history-check">✓</span><span class="history-name">Run</span></div><span class="history-meta">3 km · 15 min</span></div>'
+        : `<button class="notification" id="inlinePending" aria-label="Open exercise confirmation"><span class="notification-dot" aria-hidden="true"></span><span class="notification-label">${count} exercise${count === 1 ? '' : 's'} ready to confirm</span><span class="chevron" aria-hidden="true">›</span></button>`;
+      return `<article class="turn">${userMessage("I have ran 3km this morning, for 15mins. It was tiring man! I don't know why, but I felt unusual sickish after that.", '09:43')}<p class="eco-reply">Logged your 3km run. Stop exercising for now and focus on recovery. If the sick feeling is severe, returns, or does not settle, please seek medical help.</p>${feedback('09:43')}${card}</article>`;
+    }
+
+    function continuedTurns() {
+      return `<article class="turn">${userMessage('I rested for a while and feel a little better now.', '09:47')}<p class="eco-reply">Glad to hear that. Keep the rest of today gentle, hydrate, and stop if the sick feeling returns.</p>${feedback('09:47')}</article><article class="turn">${userMessage('Can you show me my pace after I confirm it?', '09:49')}<p class="eco-reply">Yes. Once confirmed, the run will appear in your session history with its distance, duration, and average pace.</p>${feedback('09:49')}</article>`;
+    }
+
+    function bindFeedActions() {
+      const inline = document.getElementById('inlinePending');
+      if (inline) inline.addEventListener('click', openSheet);
+      document.querySelectorAll('.feedback button').forEach(button => {
+        button.addEventListener('click', () => {
+          const group = button.parentElement;
+          group.querySelectorAll('button').forEach(item => item.classList.remove('selected'));
+          button.classList.add('selected');
+        });
+      });
+    }
+
+    function setState(state) {
+      currentState = state;
+      hasPending = state === 'pending' || state === 'scrolled';
+      settingsScreen.classList.remove('open');
+      offlineScreen.classList.remove('open');
+      stickyPending.classList.remove('visible');
+      document.querySelectorAll('.state-button[data-state]').forEach(button => button.classList.toggle('active', button.dataset.state === state));
+      stickyPending.querySelector('.notification-label').textContent = state === 'scrolled' ? '3 exercises ready to confirm' : '1 exercise ready to confirm';
+
+      if (state === 'open') feed.innerHTML = '<section class="empty-state"><div class="empty-mark">E</div><p class="empty-kicker">Today\'s session</p><h3>Ready when you are.</h3><p class="empty-copy">Tell Eco what you trained in your own words. Short, messy, or detailed all work.</p><div class="starters"><button class="starter" data-prompt="I completed a strength workout today."><span>Log a strength workout</span><span>›</span></button><button class="starter" data-prompt="I went for a run this morning."><span>Log a run or walk</span><span>›</span></button><button class="starter" data-prompt="Show me my recent progress."><span>Review recent progress</span><span>›</span></button></div></section>';
+      if (state === 'sent') feed.innerHTML = firstTurn(false);
+      if (state === 'failed') feed.innerHTML = `<article class="turn">${userMessage('Hello there Eco', '09:41')}<div class="reply-error"><p>Eco could not reply just now. Your message is safe.</p><button class="retry" id="retryReply">Try again</button></div></article>`;
+      if (state === 'replied') feed.innerHTML = firstTurn(true);
+      if (state === 'pending') feed.innerHTML = firstTurn(true) + pendingTurn(false);
+      if (state === 'scrolled') feed.innerHTML = firstTurn(true) + pendingTurn(false, 3) + continuedTurns();
+      if (state === 'confirmed') feed.innerHTML = firstTurn(true) + pendingTurn(true) + continuedTurns();
+
+      bindFeedActions();
+      document.querySelectorAll('.starter').forEach(button => button.addEventListener('click', () => {
+        composer.value = button.dataset.prompt;
+        resizeComposer();
+        composer.focus();
+      }));
+      const retry = document.getElementById('retryReply');
+      if (retry) retry.addEventListener('click', () => setState('sent'));
+      feed.scrollTop = 0;
+      requestAnimationFrame(() => {
+        if (state === 'sent' || state === 'pending' || state === 'confirmed') feed.scrollTop = feed.scrollHeight;
+        if (state === 'scrolled') {
+          feed.scrollTop = feed.scrollHeight;
+          updateSticky();
+        }
+      });
+    }
+
+    function updateSticky() {
+      const inline = document.getElementById('inlinePending');
+      if (!hasPending || !inline) {
+        stickyPending.classList.remove('visible');
+        return;
+      }
+      const feedTop = feed.getBoundingClientRect().top;
+      const inlineBottom = inline.getBoundingClientRect().bottom;
+      stickyPending.classList.toggle('visible', inlineBottom < feedTop + 8);
+    }
+
+    function openSheet() { sheetBackdrop.classList.add('open'); }
+    function closeSheet() { sheetBackdrop.classList.remove('open'); }
+
+    function resizeComposer() {
+      composer.style.height = 'auto';
+      composer.style.height = Math.min(composer.scrollHeight, 108) + 'px';
+      send.classList.toggle('ready', Boolean(composer.value.trim()));
+    }
+
+    function sendMessage() {
+      const text = composer.value.trim();
+      if (!text) return;
+      const time = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date());
+      const empty = feed.querySelector('.empty-state');
+      if (empty) empty.remove();
+      feed.insertAdjacentHTML('beforeend', `<article class="turn" id="liveTurn">${userMessage(text.replace(/</g, '&lt;').replace(/>/g, '&gt;'), time)}<div class="typing" aria-label="Eco is typing"><span></span><span></span><span></span></div></article>`);
+      composer.value = '';
+      resizeComposer();
+      feed.scrollTop = feed.scrollHeight;
+      window.setTimeout(() => {
+        const live = document.getElementById('liveTurn');
+        if (!live) return;
+        live.querySelector('.typing').outerHTML = `<p class="eco-reply">Got it. I can help turn that into a clean workout entry when you are ready.</p>${feedback(time)}`;
+        bindFeedActions();
+        feed.scrollTop = feed.scrollHeight;
+      }, 900);
+    }
+
+    document.querySelectorAll('.state-button[data-state]').forEach(button => button.addEventListener('click', () => setState(button.dataset.state)));
+    feed.addEventListener('scroll', updateSticky, { passive: true });
+    stickyPending.addEventListener('click', openSheet);
+    document.getElementById('closeSheet').addEventListener('click', closeSheet);
+    document.getElementById('confirmExercise').addEventListener('click', () => { closeSheet(); setState('confirmed'); });
+    document.getElementById('askEco').addEventListener('click', () => {
+      closeSheet();
+      composer.value = 'Is this run ready to confirm, and what does the pace tell me?';
+      resizeComposer();
+      composer.focus();
+    });
+    sheetBackdrop.addEventListener('click', event => { if (event.target === sheetBackdrop) closeSheet(); });
+    composer.addEventListener('input', resizeComposer);
+    composer.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+    send.addEventListener('click', sendMessage);
+    document.querySelector('.avatar').addEventListener('click', () => settingsScreen.classList.add('open'));
+    document.getElementById('showSettings').addEventListener('click', () => settingsScreen.classList.add('open'));
+    document.getElementById('showOffline').addEventListener('click', () => {
+      settingsScreen.classList.remove('open');
+      offlineScreen.classList.add('open');
+    });
+    document.getElementById('closeSettings').addEventListener('click', () => settingsScreen.classList.remove('open'));
+    document.getElementById('retryConnection').addEventListener('click', event => {
+      event.currentTarget.classList.add('loading');
+      window.setTimeout(() => {
+        event.currentTarget.classList.remove('loading');
+        offlineScreen.classList.remove('open');
+      }, 700);
+    });
+    document.getElementById('themeSwitch').addEventListener('click', event => {
+      const dark = app.dataset.theme !== 'light';
+      app.dataset.theme = dark ? 'light' : 'dark';
+      event.currentTarget.setAttribute('aria-checked', String(!dark));
+    });
+    document.querySelectorAll('#unitControl button').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('#unitControl button').forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+    }));
+
+    setState('pending');
+    resizeComposer();
+  </script>
+</body>
+</html>
