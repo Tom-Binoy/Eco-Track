@@ -142,12 +142,21 @@ export async function assembleContext(ctx, chatId, authUserId) {
   // 4. Get recent messages (always fresh)
   const recentMessages = await ctx.runQuery(api.functions.messages.getRecent, { chatId, limit: 20 })
 
-  // 5. Get sessionSummaries if needed (check token estimate)
+  // 5. Get ordered message blocks for every raw message in the turn window.
+  // Include text, tool calls, and tool results when constructing Gemini history,
+  // even if a prior tool failed or its output was invalid. Never query apiUsage
+  // for prompt assembly.
+  const messageBlocks = await ctx.runQuery(
+    api.functions.messageBlocks.getForMessages,
+    { messageIds: recentMessages.map(message => message._id) }
+  )
+
+  // 6. Get sessionSummaries if needed (check token estimate)
   const sessionSummaries = await ctx.runQuery(
     api.functions.sessionSummaries.getForChat, { chatId }
   )
 
-  // 6. Get pinned cards (from latest message's cardContext)
+  // 7. Get pinned cards (from latest message's cardContext)
   const latestMessage = recentMessages[recentMessages.length - 1]
   const pinnedCards = []
   if (latestMessage?.cardContext) {
@@ -158,7 +167,7 @@ export async function assembleContext(ctx, chatId, authUserId) {
     }
   }
 
-  // 7. Build and cache if no cache existed
+  // 8. Build and cache if no cache existed
   if (!cachedContext) {
     await ctx.runMutation(api.functions.chats.setCachedContext, {
       chatId,
@@ -167,7 +176,14 @@ export async function assembleContext(ctx, chatId, authUserId) {
     })
   }
 
-  return { profile, workoutContext, recentMessages, sessionSummaries, pinnedCards }
+  return {
+    profile,
+    workoutContext,
+    recentMessages,
+    messageBlocks,
+    sessionSummaries,
+    pinnedCards,
+  }
 }
 ```
 
@@ -501,7 +517,9 @@ Messages now come from Convex reactively — the list updates automatically when
 
 ### 7. `apiUsage` Logging
 
-Every Gemini call must log token usage. After the Gemini response, in `processTurn`:
+Every Gemini call must log token usage. These records are exclusively for
+backend cost/paywall accounting and must never be passed to Gemini in a later
+turn. After the Gemini response, in `processTurn`:
 
 ```ts
 // Log token usage

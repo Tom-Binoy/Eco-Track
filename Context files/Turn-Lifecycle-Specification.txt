@@ -2,7 +2,7 @@
 
 > This document describes turn-by-turn behavior only. Authoritative field
 > definitions for every table referenced below live in the schema document
-> (`eco_track_schema_phase7.md`), which is the single source of truth for
+> (`Final-Schema.txt`), which is the single source of truth for
 > shapes/types. Where this doc previously restated full field lists, it now
 > points back to the schema instead.
 
@@ -10,16 +10,47 @@
 
 Per `(userId, chatId)`, before the Gemini call:
 
-- **`profiles`** (by `by_userId`) — `equipment`, `goals`, `injuries`, `skillLevel`, `trainingPattern`, `tonePreference`, `weightUnit`/`distanceUnit`, `timezone`.
+- **Lean cached context** — `tonePreference`, `weightUnit`, `distanceUnit`, unresolved injuries, and `workoutContext`. Full profile details are read only through `Get_data`.
 - **`workoutContext`** — latest row by `by_user`, `createdAt` desc, take 1.
-- **`chats.cachedContext`** — if present and fresh (built at session start), reuse instead of re-fetching `profiles`/`workoutContext` above. Cache lives for the day, invalidated by daily-check.
+- **`chats.cachedContext`** — if present and fresh (built at session start), reuse instead of re-fetching `profiles`/`workoutContext` above. Cache lives for the day, invalidated by daily-cleanup.
 - **`messages`** — recent N rows via `by_chat`, ordered by `timestamp`. Always fetched fresh (cheapest, always-changing part).
+- **`messageBlocks`** — fetch the persisted blocks for every raw message
+  included above, ordered by message timestamp then block `order`. Send their
+  text, tool-call, and tool-result content to Gemini as the turn history.
+  Preserve the trace exactly: a tool call or result remains in context even if
+  it was invalid, failed, or led to a mistaken model response. `apiUsage` is
+  never fetched for or included in Gemini context.
 - **`sessionSummaries`** — via `by_chat_and_tier`, latest `compressedTill` per tier, used once raw messages exceed the token-size threshold.
-- **Pinned card injection**: if the latest `messages.cardContext` has any entries with `closed: false`, fetch those `cards._id` rows fresh and inject their `rawOutput`/`parsedData` into this turn's prompt. Cards with `closed: true` are shown once (this closure turn) then never injected or rendered again.
+- **Pinned card injection**: query `cards` for this chat where `inDiscussion === true`, then inject their `rawOutput`/`parsedData`. `messages.cardContext.closed` is UI decoration only and is never used for prompt injection.
 
 ## 2. The Gemini Call
 
-One request. `tools: [log_workout]`, `responseSchema` set. If pinned cards are active, each is labeled `"Card 1"`, `"Card 2"`, etc. (ephemeral, request-scoped mapping — never a persisted or schema field) — model only ever sees/echoes labels, never real `cards._id`s.
+Call 1 uses `tools: [log_workout, Get_data, Correct_log]` and
+`responseSchema: { reply: string }`. `log_workout` is create-only;
+`Correct_log` owns every correction. If pinned cards are active, each is
+labeled `"Card 1"`, `"Card 2"`, etc. (ephemeral, request-scoped mapping —
+never a persisted or schema field) — model only ever sees/echoes labels,
+never real `cards._id`s.
+
+`Get_data` never accepts a session/database ID. It has no `collectionType`
+field: the supplied optional arguments determine what is read. Its contract is:
+
+- `collectionPoints`: an optional array of requested profile fields. Allowed
+  values are `name`, `injuries`, `equipment`, `goals`, `trainingPattern`,
+  `skillLevel`, `weightUnit`, and `distanceUnit`.
+- `dailySummaryDate`: an optional local calendar date in `YYYY-MM-DD` format.
+  It reads that user's daily summary for that exact date and returns only
+  `{ date, content }`, or `null` if no summary exists.
+- `dateRange`: an optional `{ startDate, endDate }` range for historical
+  workout lookup. The first call returns chronologically ordered, ephemeral
+  `Exercise 1`, `Exercise 2`, etc. labels.
+- `exerciseId`: optional and only meaningful with `dateRange`; it must be one
+  of the returned `Exercise N` labels and returns that exercise's details.
+
+The tool result always has `profile`, `dailySummary`, and `exercises` keys.
+`Correct_log` may target a pinned card, or a historical `Exercise N` only after
+that `Get_data` flow has returned it. Any of these read requests may be
+combined in one call, but Eco must not request data speculatively.
 
 Response either:
 - **(a)** includes a `functionCall` (args = parse data) → logging/correction turn.
@@ -27,65 +58,101 @@ Response either:
 
 ## 3. Post-Call Validation
 
-Write a `messages` row regardless of branch (see schema for the full field list).
+Create the Eco `messages` row when processing starts, then complete its
+`ecoText` when the response is available. The client may observe this row and
+its `messageBlocks` trace reactively while processing continues.
 
 - **No tool call** → done, return `reply`.
 - **Tool call fired** → run deterministic Zod validation (types, ranges, enum membership).
 
-| Validator | Model's `needsClarification` | Effective path |
-|---|---|---|
-| pass | false | high confidence |
-| pass | true | low confidence |
-| fail | either | low confidence (validator overrides model) |
-
-Validator failure is UX-identical to low confidence — no separate error state.
+`log_workout` validation covers types, ranges, and block enums.
+`needsClarification` determines whether a valid extraction auto-confirms or
+creates a pending card. Vague exercise references are handled conversationally:
+Eco asks for a concrete exercise name and does not call `log_workout`, so there
+is no generic-phrase field or generic-phrase card path. A validation failure
+also produces a conversational clarification instead of a card. No card or
+logged exercise is written until every exercise has a canonical `exerciseId`.
 
 ## 4. Write Branch
 
-**High confidence:**
-1. Find/create `sessions` row (`by_user_date`).
-2. Write `blocks` (`sessionId`, `userId` denormalized, `types`, `order`).
-3. Write `exercises` (`blockId`, `userId` denormalized, `name`, `sets[]`, `order`).
-4. Write `cards` as confirmed, with `sessionId` set.
-5. Set `messages.sessionId`.
-
-**Low confidence:**
-1. Write `cards` only, as pending, with `sessionId` left unset.
-2. No `sessions`/`blocks`/`exercises` writes.
-3. User confirm (direct mutation, no AI) later performs steps 1–3 above, backfills `cards.sessionId`, flips `state → "confirmed"`.
+1. Resolve every concrete extracted exercise: aliases resolve immediately; an
+   alias miss uses the capped Call 2 naming loop (`search_exercise_library`
+   and, after explicit consent, `get_new_exercise_guidance`). Generic wording
+   never reaches this branch because Eco asks for a concrete name instead.
+2. `still_ambiguous` also stays plain conversation. It writes neither a card
+   nor an alias. At most one naming conversation may be active in a chat.
+3. A fully resolved `matched` or `new_custom` workout with
+   `needsClarification: true` writes one **pending** card only. With
+   `needsClarification: false`, it creates the confirmed card plus its session,
+   blocks, exercises, and aliases immediately.
+4. Confirm writes the canonical/custom exercise entry as needed, the confirmed
+   alias, then the session, blocks, and exercises for a pending card; it
+   backfills `sessionId` and flips the card to `confirmed`.
+5. Historical `Correct_log` always creates a pending card with
+   `correctsBlockId`; its confirm replaces the target block only after explicit
+   re-confirmation.
 
 ## 5. Cards — Behavior
 
 - **Direct manual edits**: instant, local, no state transition needed — user edits fields, taps confirm, write happens same as normal confirm flow.
-- **Ask Eco**: available on both `pending` and `confirmed` cards. Sets `inDiscussion: true`. Card is isolated in UI (expanded, pinned open) regardless of starting state.
-  - Pure clarification → no state change, `inDiscussion` eventually flips false.
+- **Ask Eco**: available on both `pending` and `confirmed` cards. Sets `inDiscussion: true`. Card is isolated in UI (expanded, pinned open) regardless of starting state. The active discussion is also signalled by a visually distinct banner directly above the chat text input.
+  - Pure clarification → no state change. Only the explicit **Back to deck** control in that input-area banner calls `bringCardBackToDeck` and flips `inDiscussion` false.
   - Correction on a `pending` card → patch `rawOutput`/`parsedData` in place, stays `pending`, awaits confirm as normal.
   - Correction on a `confirmed` card → patch `cards`, but do **not** silently rewrite `exercises` — flip back to a re-confirm state, show diff, only write to `exercises` on explicit re-confirm.
 - **Multi-card pin (v2+)**: explicit user multi-select, not model-inferred — sidesteps ambiguity. Uses the same ephemeral `"Card N"` labeling already built for v1 single-card flow.
 
 ## 6. Messages — Card Context Behavior
 
-- One `cardContext` entry per pinned/discussed card active as of that turn.
-- `closed: true` appears exactly once, on the turn where that card's discussion ends.
-- Drives both: (a) next turn's prompt — "Card 2 has been closed," stop injecting it; (b) UI — chip renders once on the closure message, then falls off permanently.
+- A `cardContext` closure entry is written exactly once by the explicit **Back
+  to deck** action in the input-area discussion banner, on the card's source
+  message.
+- It drives the UI closure chip only; prompt injection reads `cards.inDiscussion`.
 
-## 7. Memory / Reflection Triggers
+## 7. Naming-guide and trace persistence
 
-- **`sessionSummaries` compression**: token/size-estimate threshold on raw `messages` for a chat (not message count, not time-based). Fires post-turn, non-blocking. Tracked cumulatively via `compressedTill`.
-- **`dailySummaries` + `workoutContext`**: single daily-check trigger (no separate session-close). Runs via hourly cron: bucket by `profiles.timezone` (IANA string), find zones currently at local midnight, run daily-check only for users in those zones. Idempotency guard: skip if `dailySummaries` already exists for `(userId, today's local date)`.
-- Same cron also: purges that day's `sessionSummaries` rows once `dailySummaries` is written, and evaluates/updates `workoutContext` at the same time.
+- The backend writes `exercise_naming_guide_active` to `messages.usedTools` on
+  every guide turn. A real `get_new_exercise_guidance` call is recorded by name
+  as well.
+- Context assembly counts the trailing marker streak from already-fetched
+  messages. At 8 turns it nudges resolution; at 10 it force-closes under the
+  raw name without saving an alias.
+- `messageBlocks` are written in order as text, tool calls, and tool results.
+  They are client-visible and are also the persisted tool history for main-turn
+  Gemini context. Invalid or failed tool traces are retained rather than hidden
+  from the model. Token/cost records in `apiUsage` remain backend-only and are
+  never sent to Gemini.
 
-## 8. Context Caching
+## 8. Memory / Reflection Triggers
 
-- `chats.cachedContext` / `cachedContextAt` — snapshot of `profiles`+`workoutContext`, built once per chat/day, invalidated by daily-check. Avoids re-querying rarely-changing data every turn.
+- **`sessionSummaries` compression**: a token/size-estimate threshold on the
+  compressible raw messages and their persisted `messageBlocks` (not message
+  count or time-based) is scheduled post-turn, non-blocking, once Gemini has
+  completed the message; it is never scheduled between tool calls. Tier 1 receives each
+  source message’s ordered text/tool-call/tool-result trace; Tier 2 receives
+  the resulting Tier 1 summaries and therefore retains material tool outcomes.
+  Failed or invalid tool results must be represented when they affect recovery
+  or an unresolved thread. Neither tier receives `apiUsage`. Progress is tracked
+  cumulatively via `compressedTill`. When at least six Tier 1 rows exist, Tier
+  2 compacts exactly the five oldest Tier 1 rows, retaining the sixth and any
+  newer rows; existing Tier 2 rows are not re-compressed by this v1 mechanism.
+- **Daily cleanup** (`dailySummaries`, profile update, `workoutContext`): one hourly, local-midnight trigger; no session-close trigger. It skips only when no `chats` row exists for `(userId, today's local date)`; inactive days therefore do not create summaries. An existing `dailySummaries` row for that date is retry-safety only, not the real app gate.
+- Daily cleanup makes exactly one Gemini call. Its input order is: daily-cleanup system prompt; full profile; latest workout context; daily summaries; remaining tier 1 and tier 2 session summaries in chronological order; and the uncompressed raw-message tail in chronological order. Both tiers are included; a raw message covered by `compressedTill` is never included again.
+- The daily-summary window is the larger of (a) every retained summary after the latest workout-context row's `sourceDailySummaryId`, or (b) the two most recent available daily summaries. If fewer than two exist, inject all available summaries. A recent context update therefore cannot shrink the journal evidence below this floor, while a context that has gone unchanged for longer receives all accumulated summaries.
+- The response contains a daily summary plus optional typed profile and workout-context replacements. The model alone decides whether `workoutContext` is `null`; when null, no row is written and subsequent cleanup calls continue accumulating daily summaries from the last context update. Profile updates are limited to explicit changes in goals, equipment, training pattern/availability, skill level, or injuries. Each injury has a stable `injuryId`; updates must target that ID, never a description match.
+- The daily summary, optional profile patch, and optional workout-context row commit together before the cron purges that day's `sessionSummaries` and invalidates today's cached chat context.
+
+## 9. Context Caching
+
+- `chats.cachedContext` / `cachedContextAt` — lean bundle of tone/unit
+  preferences, active injuries, and `workoutContext`, built once per chat/day
+  and invalidated by daily-cleanup.
 - Gemini-side prompt/context caching — deferred post-v1, revisit once the static system prompt is finalized and its real token weight is known.
 
-## 9. Explicitly Deferred
+## 10. Explicitly Deferred
 
 - Multi-card free-text "Ask Eco" (ambiguous card resolution) — deferred to pin feature (explicit multi-select avoids the ambiguity).
 - Message editing beyond "most recent message only" — no tree/fork structure for daily chat, ever. Fork as a distinct, deliberate future feature for blueprint/analysis, not derived from chat editing.
 - `messageFeedback` aggregate analytics, git-style history — previously deferred, unchanged.
 
-## Open item carried to next review
-
-`chats.cachedContext` invalidation timing: confirm whether a *new* chat opened mid-day (after `workoutContext` changed) builds a fresh cache at creation, or could inherit a stale cache from an earlier same-day chat.
+The one-chat-per-user-per-day rule removes the formerly open mid-day cache
+question: a newly created chat always builds its own cache.

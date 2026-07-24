@@ -8,15 +8,27 @@
  * @module
  */
 
+import type * as auth from "../auth.js";
+import type * as crons from "../crons.js";
 import type * as functions_apiUsage from "../functions/apiUsage.js";
 import type * as functions_blocks from "../functions/blocks.js";
 import type * as functions_cards from "../functions/cards.js";
 import type * as functions_chats from "../functions/chats.js";
 import type * as functions_crons from "../functions/crons.js";
+import type * as functions_dailySummaries from "../functions/dailySummaries.js";
+import type * as functions_exerciseLibrary from "../functions/exerciseLibrary.js";
 import type * as functions_exercises from "../functions/exercises.js";
 import type * as functions_messages from "../functions/messages.js";
 import type * as functions_profiles from "../functions/profiles.js";
+import type * as functions_seedWger from "../functions/seedWger.js";
+import type * as functions_sessionSummaries from "../functions/sessionSummaries.js";
 import type * as functions_sessions from "../functions/sessions.js";
+import type * as functions_workoutContext from "../functions/workoutContext.js";
+import type * as http from "../http.js";
+import type * as lib_dailyCheck from "../lib/dailyCheck.js";
+import type * as lib_gemini from "../lib/gemini.js";
+import type * as lib_prompts_ecoSystem from "../lib/prompts/ecoSystem.js";
+import type * as lib_validation from "../lib/validation.js";
 
 import type {
   ApiFromModules,
@@ -25,15 +37,27 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  auth: typeof auth;
+  crons: typeof crons;
   "functions/apiUsage": typeof functions_apiUsage;
   "functions/blocks": typeof functions_blocks;
   "functions/cards": typeof functions_cards;
   "functions/chats": typeof functions_chats;
   "functions/crons": typeof functions_crons;
+  "functions/dailySummaries": typeof functions_dailySummaries;
+  "functions/exerciseLibrary": typeof functions_exerciseLibrary;
   "functions/exercises": typeof functions_exercises;
   "functions/messages": typeof functions_messages;
   "functions/profiles": typeof functions_profiles;
+  "functions/seedWger": typeof functions_seedWger;
+  "functions/sessionSummaries": typeof functions_sessionSummaries;
   "functions/sessions": typeof functions_sessions;
+  "functions/workoutContext": typeof functions_workoutContext;
+  http: typeof http;
+  "lib/dailyCheck": typeof lib_dailyCheck;
+  "lib/gemini": typeof lib_gemini;
+  "lib/prompts/ecoSystem": typeof lib_prompts_ecoSystem;
+  "lib/validation": typeof lib_validation;
 }>;
 
 /**

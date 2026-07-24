@@ -25,16 +25,27 @@ Read Turn Lifecycle §7 (Memory / Reflection Triggers) carefully before starting
 
 `convex/functions/sessionSummaries.ts`
 
-Compression fires **post-turn, non-blocking** when the raw messages for a chat exceed a token-size estimate threshold. It summarises older messages into a `sessionSummaries` row and stops injecting those raw messages into the context.
+Compression fires **post-turn, non-blocking** when the compressible raw
+messages for a chat, including their persisted `messageBlocks`, exceed a
+token-size estimate threshold. Tier 1 receives each message’s ordered text,
+tool-call, and tool-result trace, including failed or invalid tool results.
+It summarises older messages into a `sessionSummaries` row and stops injecting
+those raw messages into the context. `apiUsage` is never included.
 
 #### Token estimation
 
-A simple character-count proxy: assume ~4 characters per token. Threshold: 6,000 tokens (~24,000 characters) of raw message content before compression triggers.
+A simple character-count proxy: assume ~4 characters per token. The current
+implementation triggers at 10,000 characters of **compressible** message text
+plus ordered block content, while keeping the newest five messages raw.
 
 ```ts
 export function estimateTokens(messages: Message[]): number {
   const totalChars = messages.reduce((acc, msg) => {
-    return acc + (msg.userText?.length ?? 0) + (msg.ecoText?.length ?? 0)
+    return acc
+      + (msg.userText?.length ?? 0)
+      + (msg.ecoText?.length ?? 0)
+      + msg.messageBlocks.reduce((blockTotal, block) =>
+        blockTotal + block.content.length + (block.toolName?.length ?? 0), 0)
   }, 0)
   return Math.ceil(totalChars / 4)
 }
@@ -70,7 +81,9 @@ export const compressIfNeeded = action({
     const toCompress = uncompressed.slice(0, -5)
     if (toCompress.length === 0) return
 
-    // Call Gemini to summarise
+    // Fetch each candidate message’s ordered messageBlocks, then call Gemini
+    // to summarise. Tool calls/results, including failed or invalid results,
+    // are part of the Tier 1 source; apiUsage is excluded.
     const summary = await summariseMessages(toCompress)
 
     const order = existingSummaries.filter(s => s.tier === 1).length
@@ -103,16 +116,17 @@ async function summariseMessages(messages: Message[]): Promise<string> {
 }
 ```
 
-#### Trigger compression post-turn
+#### Trigger compression after a completed Gemini turn
 
-In `processTurn` (Phase 5), after the write branch completes, fire compression non-blocking:
+Schedule compression non-blocking from the message-completion path. Every
+completed Gemini message is eligible; the active `Get_data` loop does not mark
+the message complete, so compression never runs between tool calls:
 
 ```ts
-// Non-blocking — do not await
-ctx.runAction(api.functions.sessionSummaries.compressIfNeeded, {
-  chatId,
-  userId: context.profile._id,
-}).catch(console.error)
+await ctx.scheduler.runAfter(0, internal.functions.sessionSummaries.compressIfNeeded, {
+  chatId: chat._id,
+  userId: chat.userId,
+})
 ```
 
 #### Update context assembly to use summaries
@@ -131,6 +145,15 @@ if (sessionSummaries.length > 0) {
 
 Raw messages still follow after the summaries. The model sees: [old summary] → [recent raw messages] → [current user message].
 
+#### Tier 2 roll-up
+
+After a Tier 1 write, once at least six Tier 1 rows exist, Tier 2 compresses
+exactly the five oldest Tier 1 rows into one denser Tier 2 row and removes those
+source rows atomically. The sixth and any newer Tier 1 rows remain raw summary
+tail. It does not reread raw messages or `messageBlocks`; it
+receives the Tier 1 summaries, which must retain material tool outcomes and
+unresolved failures. `apiUsage` remains excluded.
+
 ### 2. Hourly Cron
 
 `convex/crons.ts`
@@ -142,7 +165,7 @@ import { api } from "./_generated/api"
 const crons = cronJobs()
 
 crons.hourly(
-  "daily-check",
+  "daily-cleanup",
   { minuteOfHour: 0 },
   api.functions.crons.runDailyCheck
 )
@@ -150,287 +173,96 @@ crons.hourly(
 export default crons
 ```
 
-### 3. Daily Check Action
+### 3. Daily Cleanup Action
 
 `convex/functions/crons.ts`
 
-This is the nightly batch job. It runs every hour but only does meaningful work for users whose local time is currently midnight (±30 minutes).
+The hourly action only performs cleanup for a user at local midnight. It skips
+only when no `chats` row exists for `(userId, today's local date)`, so inactive
+days do not create `dailySummaries`. An existing `dailySummaries` row for that
+date is retry-safety only, not the real app gate.
 
-```ts
-export const runDailyCheck = action({
-  args: {},
-  handler: async (ctx) => {
-    // Get all profiles with their timezones
-    const profiles = await ctx.runQuery(api.functions.profiles.getAllTimezones)
+For an eligible chat, it fetches:
 
-    const now = Date.now()
+1. the complete profile and the latest `workoutContext` row;
+2. the larger of every `dailySummaries` row after that context row's
+   `sourceDailySummaryId` and the three most recent available daily summaries
+   (or every existing daily summary if no context row exists); and
+3. all remaining `sessionSummaries` plus only raw messages with a timestamp
+   after the greatest `compressedTill` value.
 
-    for (const profile of profiles) {
-      try {
-        await processDailyCheckForUser(ctx, profile, now)
-      } catch (err) {
-        console.error(`Daily check failed for user ${profile._id}:`, err)
-        // Continue — don't let one failure block others
-      }
-    }
-  },
-})
+The summary rows are chronological by `compressedTill` (with tier/order as
+tie-breakers); the raw tail is chronological by message timestamp. Tier 2 and
+remaining tier 1 summaries are both included. This means the model sees every
+piece of the current day's conversation exactly once: compressed history,
+then its uncompressed tail.
 
-async function processDailyCheckForUser(ctx, profile, now: number) {
-  const tz = profile.timezone || "UTC"
-
-  // Get local time for this user
-  const localDate = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(new Date(now))
-
-  const localHour = new Intl.DateTimeFormat("en-GB", {
-    timeZone: tz,
-    hour: "numeric",
-    hour12: false,
-  }).format(new Date(now))
-
-  // Only run for users at local midnight (hour 0)
-  if (parseInt(localHour) !== 0) return
-
-  // Idempotency: skip if dailySummaries already exists for today
-  const existing = await ctx.runQuery(api.functions.dailySummaries.getForDate, {
-    userId: profile._id,
-    date: localDate,
-  })
-  if (existing) return
-
-  // Get yesterday's chats and messages
-  const yesterday = getPreviousDate(localDate)
-  const chats = await ctx.runQuery(api.functions.chats.getForDate, {
-    userId: profile._id,
-    date: yesterday,
-  })
-
-  if (chats.length === 0) return // Nothing to summarise
-
-  // Get all messages from yesterday's chats
-  const allMessages = []
-  for (const chat of chats) {
-    const messages = await ctx.runQuery(api.functions.messages.getAllForChat, { chatId: chat._id })
-    allMessages.push(...messages)
-  }
-
-  if (allMessages.length === 0) return
-
-  // Get yesterday's sessions (for workoutContext)
-  const sessions = await ctx.runQuery(api.functions.sessions.getForDate, {
-    userId: profile._id,
-    date: yesterday,
-  })
-
-  // Generate daily summary via Gemini
-  const { summaryContent, profileUpdateNotes, shouldUpdateProfile } =
-    await generateDailySummary(profile, allMessages, sessions)
-
-  // Write dailySummaries
-  const primaryChatId = chats[0]._id
-  const dailySummaryId = await ctx.runMutation(api.functions.dailySummaries.write, {
-    chatId: primaryChatId,
-    userId: profile._id,
-    date: yesterday,
-    content: summaryContent,
-    profileUpdated: shouldUpdateProfile,
-    profileUpdateNotes: shouldUpdateProfile ? profileUpdateNotes : undefined,
-  })
-
-  // Update workoutContext
-  const workoutContextContent = await generateWorkoutContext(profile, summaryContent, sessions)
-  await ctx.runMutation(api.functions.workoutContext.write, {
-    userId: profile._id,
-    content: workoutContextContent,
-    triggerReason: "daily-check",
-    sourceDailySummaryId: dailySummaryId,
-    sourceSessionId: sessions[0]?._id,
-  })
-
-  // Update profile if Gemini suggested changes
-  if (shouldUpdateProfile && profileUpdateNotes) {
-    await applyProfileUpdates(ctx, profile._id, profileUpdateNotes)
-  }
-
-  // Purge sessionSummaries for yesterday's chats
-  for (const chat of chats) {
-    await ctx.runMutation(api.functions.sessionSummaries.purgeForChat, { chatId: chat._id })
-  }
-
-  // Invalidate cachedContext for today's chats (workoutContext just changed)
-  const todayChats = await ctx.runQuery(api.functions.chats.getForDate, {
-    userId: profile._id,
-    date: localDate,
-  })
-  for (const chat of todayChats) {
-    await ctx.runMutation(api.functions.chats.invalidateCachedContext, { chatId: chat._id })
-  }
-}
-```
-
-### 4. Gemini Calls for Daily Check
+### 4. One Gemini Daily-Cleanup Call
 
 `convex/lib/dailyCheck.ts`
 
+Daily cleanup makes exactly one Gemini call. Its system instruction is the
+`daily-cleanup` prompt; the request content is injected in this fixed order:
+
+1. full profile data;
+2. latest workout context, or `null`;
+3. the daily-summary window: all summaries accumulated since that workout
+   context was written, with the three most recent available summaries always
+   retained as a minimum;
+4. remaining tier 1 and tier 2 session summaries, in chronological order;
+5. the uncompressed raw-message tail, in chronological order.
+
+The response is schema-validated JSON:
+
 ```ts
-export async function generateDailySummary(profile, messages, sessions) {
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" })
-
-  const transcript = messages.map(m => `User: ${m.userText}\nEco: ${m.ecoText}`).join("\n\n")
-
-  const result = await model.generateContent(`
-You are reviewing a day of workout conversations for ${profile.name}.
-
-Write a brief journal entry (2-4 sentences) capturing:
-- What they trained
-- How it went (tone, effort, any struggles)
-- Anything notable
-
-Then on a new line starting with "PROFILE_UPDATE:" suggest any profile field updates if training patterns or goals seem to have meaningfully changed. If no update needed, write "PROFILE_UPDATE: none".
-
-Conversation:
-${transcript}
-`)
-
-  const text = result.response.text()
-  const [summaryContent, profileLine] = text.split("PROFILE_UPDATE:")
-  const profileUpdateNotes = profileLine?.trim()
-  const shouldUpdateProfile = profileUpdateNotes && profileUpdateNotes !== "none"
-
-  return {
-    summaryContent: summaryContent.trim(),
-    profileUpdateNotes: profileUpdateNotes ?? "",
-    shouldUpdateProfile: !!shouldUpdateProfile,
-  }
-}
-
-export async function generateWorkoutContext(profile, dailySummary, sessions) {
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" })
-
-  const result = await model.generateContent(`
-Based on this training summary, fill in the workout context fields for ${profile.name}.
-Respond ONLY in JSON with these exact keys:
 {
-  "currentFocus": "string",
-  "recentProgress": "string",
-  "consistency": "string",
-  "notableAchievements": "string",
-  "considerations": "string"
+  dailySummary: string,
+  profileUpdate: {
+    goals?: string,
+    equipment?: string,
+    trainingPattern?: string,
+    trainingAvailability?: { daysPerWeek: number, sessionLength: number },
+    skillLevel?: {
+      strength: string, flexibility: string, endurance: string,
+      calisthenicsSkills: string, sportSpecific: string, bodyComposition: string,
+    },
+    injuries?: Array<{ description: string, status: string, notedAt: number }>,
+  } | null,
+  profileUpdateNote: string | null,
+  workoutContext: {
+    currentFocus: string,
+    recentProgress: string,
+    consistency: string,
+    notableAchievements: string,
+    considerations: string,
+  } | null,
 }
-
-Summary: ${dailySummary}
-`)
-
-  const json = result.response.text().replace(/```json|```/g, "").trim()
-  return JSON.parse(json)
-}
 ```
 
-### 5. Supporting Mutations/Queries
+The model returns `profileUpdate: null` unless the user explicitly supplied a
+durable training-profile change. It may change only the listed training fields;
+identity, units, timezone, tone, and display preferences are never model
+updated. It returns `workoutContext: null` unless the combined evidence
+materially changes the ongoing context. A null response deliberately leaves
+the existing context row untouched, so the next run receives this day's daily
+summary as part of the accumulated history.
 
-Several small functions needed across the above:
+### 5. Persistence and Supporting Functions
 
-`convex/functions/profiles.ts` — add:
-```ts
-export const getAllTimezones = query({
-  args: {},
-  handler: async (ctx) => {
-    return await ctx.db.query("profiles").collect()
-    // Returns all profiles — only _id and timezone needed by cron
-  },
-})
-```
+`dailySummaries.getSinceWorkoutContext` reads chronological daily summaries
+after a supplied `sourceDailySummaryId`, but always returns at least the three
+most recent available rows. If no source is supplied—or that source was
+force-deleted with its chat—it returns every retained summary for the profile.
 
-`convex/functions/dailySummaries.ts`:
-```ts
-export const getForDate = query({
-  args: { userId: v.id("profiles"), date: v.string() },
-  handler: async (ctx, { userId, date }) => {
-    return await ctx.db
-      .query("dailySummaries")
-      .withIndex("by_user_date", q => q.eq("userId", userId).eq("date", date))
-      .first()
-  },
-})
+`dailySummaries.commitDailyCleanup` is one internal mutation. Subject to its
+idempotency check, it writes the daily summary, patches the optional typed
+profile update, and appends the optional workout-context row in the same
+transaction. When a context row is written, its `sourceDailySummaryId` is the
+new daily-summary ID. The action logs the single call's token usage once.
 
-export const write = mutation({
-  args: {
-    chatId: v.id("chats"),
-    userId: v.id("profiles"),
-    date: v.string(),
-    content: v.string(),
-    profileUpdated: v.boolean(),
-    profileUpdateNotes: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    return await ctx.db.insert("dailySummaries", { ...args, createdAt: Date.now() })
-  },
-})
-```
-
-`convex/functions/workoutContext.ts`:
-```ts
-export const getLatest = query({
-  args: { userId: v.id("profiles") },
-  handler: async (ctx, { userId }) => {
-    return await ctx.db
-      .query("workoutContext")
-      .withIndex("by_user", q => q.eq("userId", userId))
-      .order("desc")
-      .first()
-  },
-})
-
-export const write = mutation({
-  args: {
-    userId: v.id("profiles"),
-    content: v.object({
-      currentFocus: v.string(),
-      recentProgress: v.string(),
-      consistency: v.string(),
-      notableAchievements: v.string(),
-      considerations: v.string(),
-    }),
-    triggerReason: v.literal("daily-check"),
-    sourceSessionId: v.optional(v.id("sessions")),
-    sourceDailySummaryId: v.optional(v.id("dailySummaries")),
-  },
-  handler: async (ctx, args) => {
-    return await ctx.db.insert("workoutContext", { ...args, createdAt: Date.now() })
-  },
-})
-```
-
-`convex/functions/sessionSummaries.ts` — add:
-```ts
-export const purgeForChat = mutation({
-  args: { chatId: v.id("chats") },
-  handler: async (ctx, { chatId }) => {
-    const summaries = await ctx.db
-      .query("sessionSummaries")
-      .withIndex("by_chat_and_tier", q => q.eq("chatId", chatId))
-      .collect()
-    for (const s of summaries) {
-      await ctx.db.delete(s._id)
-    }
-  },
-})
-```
-
-`convex/functions/chats.ts` — add:
-```ts
-export const invalidateCachedContext = mutation({
-  args: { chatId: v.id("chats") },
-  handler: async (ctx, { chatId }) => {
-    await ctx.db.patch(chatId, { cachedContext: undefined, cachedContextAt: undefined })
-  },
-})
-```
+Only after that commit succeeds does the cron purge the processed chat's
+`sessionSummaries` and invalidate today's cached chat context. This preserves
+the raw/session source material if generation or persistence fails.
 
 ---
 
@@ -441,7 +273,7 @@ export const invalidateCachedContext = mutation({
 - [ ] Cron is visible in Convex dashboard under "Scheduled Functions"
 - [ ] Manually trigger cron with a test user whose timezone is at midnight → `dailySummaries` row written
 - [ ] Second trigger for same user/date → idempotency guard fires, no duplicate row
-- [ ] `workoutContext` row written after daily check
+- [ ] `workoutContext` row is written only when the daily-cleanup response includes one
 - [ ] `sessionSummaries` rows purged after daily check
 - [ ] `cachedContext` invalidated on open chats after daily check
 - [ ] `npx tsc --noEmit` reports zero errors
@@ -452,7 +284,7 @@ export const invalidateCachedContext = mutation({
 
 - Do not build onboarding (Phase 8)
 - Do not build the paywall (Phase 9)
-- Do not implement tier-2 compression (v2 — only tier-1 is in scope for v1)
+- Do not add a tier beyond the existing tier-1 / tier-2 compression model
 - Do not index `blocks.types` (deferred per schema parking lot)
 
 ---

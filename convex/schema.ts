@@ -1,13 +1,16 @@
 import { defineSchema, defineTable } from 'convex/server'
+import { authTables } from '@convex-dev/auth/server'
 import { v } from 'convex/values'
 
 export default defineSchema({
+  ...authTables,
   profiles: defineTable({
     userId: v.id('users'),
     name: v.string(),
     createdAt: v.number(),
     injuries: v.array(
       v.object({
+        injuryId: v.string(),
         description: v.string(),
         status: v.string(),
         notedAt: v.number(),
@@ -58,6 +61,7 @@ export default defineSchema({
         }),
       ),
     ),
+    usedTools: v.optional(v.array(v.string())),
   })
     .index('by_chat', ['chatId'])
     .index('by_session', ['sessionId']),
@@ -71,6 +75,7 @@ export default defineSchema({
     state: v.union(v.literal('pending'), v.literal('confirmed')),
     order: v.number(),
     inDiscussion: v.boolean(),
+    correctsBlockId: v.optional(v.id('blocks')),
     createdAt: v.number(),
   })
     .index('by_chat', ['chatId'])
@@ -106,6 +111,7 @@ export default defineSchema({
   exercises: defineTable({
     blockId: v.id('blocks'),
     userId: v.id('profiles'),
+    exerciseId: v.id('exerciseLibrary'),
     name: v.string(),
     weightUnit: v.optional(v.union(v.literal('kg'), v.literal('lbs'))),
     order: v.number(),
@@ -118,7 +124,49 @@ export default defineSchema({
       }),
     ),
     createdAt: v.number(),
-  }).index('by_block', ['blockId']),
+  })
+    .index('by_block', ['blockId'])
+    .index('by_exercise', ['exerciseId'])
+    .index('by_user_and_name', ['userId', 'name']),
+
+  exerciseLibrary: defineTable({
+    canonicalName: v.string(),
+    aliases: v.array(v.string()),
+    searchBlob: v.string(),
+    userId: v.optional(v.id('profiles')),
+    category: v.optional(v.string()),
+    equipment: v.optional(v.string()),
+    muscleGroup: v.optional(v.string()),
+    allMuscles: v.optional(v.array(v.string())),
+    description: v.optional(v.string()),
+    source: v.union(v.literal('wger'), v.literal('custom')),
+    wgerId: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index('by_user', ['userId'])
+    .index('by_wgerId', ['wgerId'])
+    .searchIndex('search_name', {
+      searchField: 'searchBlob',
+      filterFields: ['userId', 'equipment', 'muscleGroup'],
+    }),
+
+  userExerciseAliases: defineTable({
+    userId: v.id('profiles'),
+    rawInputNormalized: v.string(),
+    exerciseId: v.id('exerciseLibrary'),
+    source: v.union(v.literal('confirmed'), v.literal('auto')),
+    createdAt: v.number(),
+    lastUsedAt: v.number(),
+  }).index('by_user_and_raw', ['userId', 'rawInputNormalized']),
+
+  messageBlocks: defineTable({
+    messageId: v.id('messages'),
+    order: v.number(),
+    type: v.union(v.literal('text'), v.literal('tool_call'), v.literal('tool_result')),
+    content: v.string(),
+    toolName: v.optional(v.string()),
+    createdAt: v.number(),
+  }).index('by_message', ['messageId']),
 
   dailySummaries: defineTable({
     chatId: v.id('chats'),

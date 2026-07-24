@@ -2,7 +2,7 @@
 
 > Load alongside: `_context.md`, `Turn-Lifecycle-Specification.md`
 > Depends on: Phase 4 (chat UI), Phase 5 (Gemini writes cards to DB)
-> Done when: Workout cards render in the chat, pending cards can be confirmed or edited, confirmed cards show correctly, Ask Eco sets inDiscussion state
+> Done when: Workout cards render in the chat, pending cards can be confirmed or edited, confirmed cards show correctly, Ask Eco sets `inDiscussion`, and the active discussion can be explicitly returned to the deck from the chat input
 
 ---
 
@@ -20,7 +20,7 @@ Read Turn Lifecycle §5 (Cards behavior) carefully before starting. The state tr
 |---|---|---|
 | `pending` | Gemini wasn't confident — needs user confirmation | Confirm, Edit, Ask Eco |
 | `confirmed` | Logged and saved | Ask Eco (triggers re-confirm on correction) |
-| `inDiscussion: true` | Ask Eco is active on this card | Reply in chat (handled by turn lifecycle) |
+| `inDiscussion: true` | Ask Eco is active on this card | Reply in chat; use the input-area **Back to deck** banner to close it |
 
 There is no "editing" state. Manual edits are instant and local — user edits a field, taps confirm, done. No intermediate state.
 
@@ -427,7 +427,16 @@ const handleAskEco = async (cardId: string) => {
 }
 ```
 
-The turn lifecycle already handles injecting the pinned card into the next Gemini call (Phase 5, context assembly). The card's `inDiscussion` flips back to false when the discussion ends — this is handled in the `processTurn` action when the card's `cardContext` entry gets `closed: true`.
+The turn lifecycle already handles injecting the pinned card into the next Gemini call (Phase 5, context assembly). A discussion remains active through pure clarification. It closes only when the user explicitly selects **Back to deck** in the input-area discussion banner; that action calls `bringCardBackToDeck`, flips `inDiscussion` to `false`, and writes the one-time `cardContext.closed` UI decoration.
+
+### 6. Bring Card Back to Deck
+
+When a card has `inDiscussion: true`, show a persistent banner directly above the chat text input. It is the sole close affordance for the active discussion card, not a control inside the workout-card sheet.
+
+- Use a clear visual status treatment as well as copy: a tinted banner and active indicator make it obvious that Eco is focused on the card.
+- The banner explains that the card is in discussion and exposes a 44×44 px minimum **Back to deck** button.
+- The button calls `api.functions.cards.bringCardBackToDeck` with the active card and its source message. Disable it while the mutation is in flight and show a retryable error if the mutation returns one.
+- Convex reactivity removes the banner after the mutation writes `inDiscussion: false`; the card returns to its normal deck presentation.
 
 ---
 
@@ -441,6 +450,8 @@ The turn lifecycle already handles injecting the pinned card into the next Gemin
 - [ ] Confirming an edited card uses the locally modified data
 - [ ] Ask Eco button sets `inDiscussion: true` on the card
 - [ ] `inDiscussion` card shows "Discussing with Eco..." and hides Ask Eco button
+- [ ] Active discussion shows the visually distinct input-area banner with a Back to deck action
+- [ ] Back to deck sets `inDiscussion: false`, writes its one-time `cardContext.closed` entry, and removes the banner
 - [ ] Correcting a confirmed card via Ask Eco flips it back to pending
 - [ ] `npx tsc --noEmit` reports zero errors
 - [ ] Tested end to end: log workout → card appears → edit → confirm → check Convex dashboard
@@ -452,7 +463,7 @@ The turn lifecycle already handles injecting the pinned card into the next Gemin
 - Do not implement multi-card pinning (v2+)
 - Do not build the history screen
 - Do not add swipe gestures or animations yet (Phase 10)
-- Do not implement `cardContext` on `messages` yet — that's needed for multi-turn Ask Eco and can be wired in during Phase 7
+- Do not add multi-card discussion controls; V1 supports the single active discussion-card banner only
 
 ---
 

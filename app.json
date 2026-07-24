@@ -1,6 +1,7 @@
 {
   "expo": {
     "name": "Eco Track",
+    "scheme": "eco-track",
     "slug": "eco-track",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -11,6 +12,9 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "android": {
+      "package": "com.anonymous.ecotrack"
     }
   }
 }

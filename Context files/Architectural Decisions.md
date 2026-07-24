@@ -4,7 +4,10 @@
 **Status:** Locked, pre-implementation
 **Audience:** Codex (code generation) + solo dev
 **Tech stack:** React Native (Expo) + Convex (DB/functions/auth) + Convex Auth (Google OAuth) + Gemini API + TypeScript strict
-**Schema authority:** Phase 7 (`eco_track_schema_phase7.md`) — includes `profiles.timezone`, `chats.cachedContext`/`cachedContextAt`, `messages.cardContext`, `cards.inDiscussion`, `sessionSummaries.compressedTill`, plus the new `onboardingProgress` table added in this session.
+**Schema authority:** `Final-Schema.txt` — includes the lean
+`chats.cachedContext`, `messages.usedTools`, `messageBlocks`,
+`exerciseLibrary`, `userExerciseAliases`, `exercises.exerciseId`, and
+`cards.correctsBlockId` in addition to the established chat and memory fields.
 **Behavioral authority:** Turn Lifecycle Specification (Phase 1, consolidated) + Onboarding Progress Summary (Phase 2 handoff) — this document does not restate their field-level detail, it wires them into the app.
 
 ---
@@ -74,7 +77,10 @@ eco-track/
 └── package.json
 ```
 
-**Rule for Codex:** `sessions`, `blocks`, `exercises` have no client-facing mutations. They are only ever written by `actions/runTurn.ts`'s write branch (direct write on high confidence, or via `cards.confirm` on low confidence) — never by a screen, never by a form.
+**Rule for Codex:** `sessions`, `blocks`, and `exercises` have no
+client-facing mutations. A resolved workout remains a pending card until the
+user confirms it; only that confirm path writes the permanent workout rows.
+`exercises.exerciseId` is required, so unresolved names can never be logged.
 
 ---
 
@@ -89,20 +95,28 @@ messages.send() [mutation]
 
 actions/runTurn.ts [action]
    1. Context assembly (Turn Lifecycle §1):
-      - chats.cachedContext if fresh, else fetch profiles + workoutContext, cache it
+      - fresh lean cached context, otherwise workoutContext plus the small
+        tone/unit/active-injury bundle
       - recent messages (always fresh)
+      - ordered messageBlocks for those raw messages; every persisted text,
+        tool-call, and tool-result trace is included, even after an invalid or
+        failed tool result. apiUsage is never part of prompt context.
       - sessionSummaries if raw messages exceed token threshold
-      - any cards with an open (closed: false) cardContext entry — pinned, injected,
+      - cards where inDiscussion=true — pinned and injected,
         labeled "Card 1" / "Card 2" by stack position (ephemeral, request-scoped only)
-   2. ONE Gemini call — tools: [log_workout], responseSchema set (Turn Lifecycle §2)
-   3. Post-call validation — Zod, deterministic (Turn Lifecycle §3)
-      validator pass + needsClarification=false → high confidence
-      anything else                              → low confidence (validator overrides model)
-   4. Write branch (Turn Lifecycle §4):
-      high confidence → sessions/blocks/exercises written directly, cards written as confirmed
-      low confidence  → cards written as pending only, sessionId left unset
-   5. messages row always written regardless of branch; ecoText comes from the SAME
-      Gemini response as the parse — not a second call.
+   2. Call 1 — tools: [log_workout, Get_data, Correct_log], responseSchema: { reply }.
+      `Get_data` selects its read by optional arguments rather than a collection
+      type: `collectionPoints` for profile fields, `dailySummaryDate`
+      (`YYYY-MM-DD`) for one daily summary, and `dateRange` / `exerciseId` for
+      historical exercises. It returns no database IDs.
+   3. Validate and resolve every exercise identity before a card exists.
+      Generic or ambiguous names remain plain conversation; aliases and the
+      capped naming loop supply the canonical identity.
+   4. Write one resolved pending card. Confirm is the only normal create path
+      for sessions/blocks/exercises and aliases. Historical corrections carry
+      correctsBlockId and are also re-confirmed.
+   5. The Eco message row is created at processing start; its final text and
+      ordered messageBlocks are updated reactively as the turn proceeds.
 ```
 
 **Client-side half (the piece explicitly left open until this session):**
@@ -176,16 +190,35 @@ No Redux/Zustand. Convex is the only state manager for anything schema-backed; l
 
 This section is the Turn Lifecycle Spec, wired into files rather than re-derived:
 
-- **`actions/runTurn.ts`** implements Turn Lifecycle §1–4 exactly: context assembly (with `chats.cachedContext` short-circuiting the `profiles`+`workoutContext` fetch when fresh), one Gemini call with `tools: [log_workout]` and a fixed `responseSchema`, Zod validation as the deterministic override authority over the model's own `needsClarification` flag, then the high/low-confidence write branch.
+- **`functions/messages.processTurn`** implements the main turn: lean context
+  assembly, Call 1 with `log_workout`, `Get_data`, and `Correct_log`, identity
+  resolution before card creation, reactive trace writes to `messageBlocks`,
+  and reinjection of those ordered blocks on later main turns. Gemini runs only
+  in this Convex action layer. `apiUsage` remains excluded from model context.
 - **`actions/runOnboardingTask.ts`** is the same shape at a smaller scale: one task-scoped tool call (`save_goals`, `save_injuries`, etc.) per turn, with only that task's prompt fragment plus a thin "already have: X, Y" carry-forward — never the full onboarding script, never prior tasks' full transcripts (Onboarding Handoff §1).
 - **Cards behavior** (§5 of Turn Lifecycle) is implemented in `convex/cards.ts`:
   - Direct manual edit on a pending card → local, instant, same confirm path as normal.
   - "Ask Eco" on either pending or confirmed → sets `inDiscussion: true`, card pins open in the stack modal regardless of state.
   - Correction on a `confirmed` card → patches `cards` only; does **not** silently rewrite `exercises` — shows a diff (`CardDiffView.tsx`), only writes through to `exercises` on explicit re-confirm.
-- **`messages.cardContext`** (§6) drives both next-turn prompt injection (stop injecting a card once its `closed: true` entry has fired) and the UI chip, which renders exactly once on the closure turn and never again.
-- **Compression and reflection triggers** (§7): `sessionSummaries` compression is size/token-threshold-based (not count or time), fires post-turn and non-blocking. `dailySummaries` + `workoutContext` run off a **single hourly cron**, bucketed by `profiles.timezone`, idempotency-guarded against re-running for a user/date pair already written. No separate session-close trigger exists — this replaces the earlier two-trigger design.
+- **`cards.inDiscussion`** is the sole prompt-injection source. The explicit
+  “bring card back to deck” mutation is the only writer that flips it false
+  and writes `messages.cardContext.closed: true`; that context field is for
+  the one-time UI closure chip only. The client presents this action in the
+  visually distinct banner directly above the chat input, not in the card
+  sheet; the reactive card query removes the banner after a successful close.
+- **Compression and reflection triggers** (§7): `sessionSummaries` compression
+  is size/token-threshold-based (not count or time), is scheduled non-blocking
+  only after a Gemini-completed message (never mid-tool loop), and gives Tier 1
+  the ordered `messageBlocks` for its source messages. Tier 2 waits for six
+  Tier 1 rows and compacts exactly the five oldest;
+  both tiers retain material tool outcomes but exclude `apiUsage`. Daily cleanup
+  runs from one hourly cron, bucketed by `profiles.timezone`; it uses one Gemini
+  request to generate the daily summary and optional profile/workout-context
+  updates from accumulated daily, compressed, and raw chat memory. No separate
+  session-close trigger exists. The daily summary plus optional updates commit
+  together before purge/cache invalidation.
 
-**Every Gemini call — main turn or onboarding task — logs to `apiUsage` without exception.** Given the £20/month Gemini budget, this is the only cost-visibility mechanism in v1 and must not be skippable by any code path.
+**Every Gemini call — main turn or onboarding task — logs to `apiUsage` without exception.** Given the £20/month Gemini budget, this is the only cost-visibility mechanism in v1 and must not be skippable by any code path. These token/cost records are backend-only and are never included in Gemini prompts.
 
 ---
 
@@ -201,7 +234,7 @@ Covered inline in Section 2's table above. Summary principle: **Convex is the st
 
 2. **`cards.by_session` and `cards.by_message` indexes are TEMPORARY**, flagged safe-to-drop post-growth-phase **three times now** across design sessions. Don't build new features against them; schedule an actual removal date instead of leaving this as a perpetual "temporary."
 
-3. **Budget and time reality check, keep visible during implementation:** £20/month Gemini budget, 5–7 hrs/week solo-dev time, sub-2-second response target on mobile. The single-call-per-turn design (context assembly → one Gemini call → validate → write) exists partly *because* of this constraint — resist the temptation to split into multiple calls later without re-checking cost/latency against this budget.
+3. **Budget and time reality check, keep visible during implementation:** £20/month Gemini budget, 5–7 hrs/week solo-dev time, sub-2-second response target on mobile. Normal turns use one Gemini call; the exercise naming resolver is the deliberate exception, capped at five tool calls. Do not add further model calls without re-checking cost and latency.
 
 4. **`dailySummaries` intentionally outlives its `chatId`** post-sweep — any UI/query joining back to `chats` must handle a dangling parent gracefully.
 

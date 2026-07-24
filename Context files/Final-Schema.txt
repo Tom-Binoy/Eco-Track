@@ -32,6 +32,28 @@ Reconciled against the Turn Lifecycle Spec (consolidated):
 - **`workoutContext.triggerReason`** — narrowed to `"daily-check"` only.
   `"session-close"` removed: there is no separate session-close trigger:
   a single hourly cron drives both `dailySummaries` and `workoutContext`.
+- **Lean chat cache** — `chats.cachedContext` now holds only tone and unit
+  preferences, active injuries, and `workoutContext`; it is no longer a full
+  `profiles` snapshot.
+- **Exercise identity** — `exerciseLibrary` and `userExerciseAliases` were
+  added. Every logged `exercises` row now has the required `exerciseId` FK;
+  its `name` remains the original extracted string.
+- **Corrections and trace** — `cards.correctsBlockId`, `messages.usedTools`,
+  and `messageBlocks` support historical corrections, guide state, the
+  client-visible processing trace, AND (reversed from earlier phases —
+  see next bullet) main-turn Gemini context and tier-1 compression.
+  `discussionType`, `guideActiveTurns`, and `hiddenTrace` are intentionally
+  absent.
+- **`messageBlocks` now read into context/compression (reversal)** —
+  earlier phases treated `messageBlocks` as presentation-only, never read
+  by the model. That's reversed: `messageBlocks` is now sent to Gemini as
+  turn history during context assembly (Turn Lifecycle Spec §1) and folded
+  into tier-1 compression (Turn Lifecycle Spec §8). Full historical
+  `messageBlocks` is fed in — not scoped to just an active naming-guide
+  window — as a v1 default, to be revisited once there's real usage data.
+  `apiUsage` remains the one exception: backend-only, never sent to Gemini.
+- **wger catalogue** — global library rows retain `wgerId`; it is the
+  idempotent upsert key for the public wger seed action.
 
 ---
 
@@ -57,7 +79,7 @@ profiles: {
   name                     // string
   createdAt                // number (timestamp)
 
-  injuries                 // array of { description, status, notedAt }
+  injuries                 // array of { injuryId, description, status, notedAt }
   equipment                // string, comma-separated, injected as-is
   goals                    // string, comma-separated, injected as-is
   trainingAvailability     // { daysPerWeek, sessionLength }
@@ -85,9 +107,10 @@ chats: {
   userId              // FK -> profiles
   date                // string "2026-06-29"
   createdAt           // number (timestamp)
-  cachedContext        // optional object, snapshot of profiles+workoutContext,
-                        // built once per chat/day. Avoids re-querying
-                        // rarely-changing context on every turn.
+  cachedContext        // optional lean object: tonePreference, weightUnit,
+                        // distanceUnit, activeInjuries, workoutContext.
+                        // Built once per chat/day; full profile data is read
+                        // on demand through Get_data.
   cachedContextAt       // optional number (timestamp) — invalidated by the
                         // daily-check cron (see workoutContext / dailySummaries
                         // below). No separate index needed; read alongside the
@@ -116,6 +139,8 @@ chats: {
 //      -> implemented as its own mutation (e.g. sweepOldChats), triggered as a
 //         side effect of that user's login if 7+ days since last check.
 //         A user who never returns never gets swept — accepted tradeoff.
+//      -> NOTE: deliberately paused for now (no code path currently invokes
+//         it) — don't re-enable until there are real users, v3+.
 //
 //   2. Force delete (user-initiated "delete this chat," or admin action)
 //      -> cascades everything the sweep does, PLUS dailySummaries
@@ -137,11 +162,11 @@ messages: {
   sessionId     // optional FK -> sessions
   timestamp     // number
   cardContext   // optional array of { cardId, order, closed: boolean }
-                // One entry per pinned/discussed card active as of this turn.
-                // closed: true appears exactly once, on the turn that card's
-                // discussion ends. Drives (a) next turn's prompt — stop
-                // injecting a closed card — and (b) UI: chip renders once
-                // on the closure message, then falls off permanently.
+                // UI decoration only. closed: true is written once by the
+                // explicit “bring card back to deck” action; it never drives
+                // prompt injection.
+  usedTools     // optional string[] of real tool names invoked this turn,
+                // plus the backend-only exercise_naming_guide_active marker.
 }
 .index('by_chat', ['chatId'])
 .index('by_session', ['sessionId'])
@@ -171,6 +196,9 @@ cards: {
                 // confirmed cards; a correction on a confirmed card patches
                 // this row but does not silently rewrite exercises — it
                 // waits for an explicit re-confirm.
+  correctsBlockId // optional FK -> blocks. Set only on a pending historical
+                  // correction; confirm replaces that block rather than
+                  // silently rewriting a committed workout.
   createdAt     // number (timestamp)
 }
 .index('by_chat', ['chatId'])
@@ -228,15 +256,71 @@ exercises: {
   userId        // FK -> profiles  [DENORMALIZED, not indexed]
                 // Same write-once/no-drift guarantee as blocks.userId
                 // above — no mutation exists to reassign exercises.blockId.
-  name          // string
+  exerciseId    // REQUIRED FK -> exerciseLibrary. A logged instance's row ID
+                // is distinct from this reusable canonical identity.
+  name          // raw extracted string; never simplified in place
   weightUnit    // optional "kg" | "lbs"
   order         // number
   sets          // array of { reps?, weight?, duration?, distance? }
   createdAt     // number (timestamp)
 }
 .index('by_block', ['blockId'])
+.index('by_exercise', ['exerciseId'])
+.index('by_user_and_name', ['userId', 'name'])
 
 // CASCADE: deleted transitively via blocks -> sessions -> profiles.
+
+
+exerciseLibrary: {
+  canonicalName // string
+  aliases       // string[]
+  searchBlob    // canonicalName + aliases, kept in sync on every write
+  userId        // optional FK -> profiles; undefined means global wger entry
+  category, equipment, muscleGroup, allMuscles, description // optional metadata
+  source        // "wger" | "custom"
+  wgerId        // optional number
+  createdAt     // number
+}
+.index('by_wgerId', ['wgerId']) // idempotent global wger seed/upsert lookup
+.index('by_user', ['userId'])
+.searchIndex('search_name', { searchField: 'searchBlob', filterFields: ['userId', 'equipment', 'muscleGroup'] })
+
+// Global rows are never deleted for a profile. Custom rows cascade with their
+// owning profile.
+// NOTE: duplicate/near-duplicate custom entries per user (e.g. two slightly
+// different "Bulgarian split squat" rows) are a known, accepted v1 gap —
+// explicitly pushed to v2, not a bug to fix now.
+
+userExerciseAliases: {
+  userId              // FK -> profiles
+  rawInputNormalized  // string
+  exerciseId          // FK -> exerciseLibrary
+  source              // "confirmed" | "auto"
+  createdAt, lastUsedAt // number timestamps
+}
+.index('by_user_and_raw', ['userId', 'rawInputNormalized'])
+
+// CASCADE: deleted with its profile.
+
+messageBlocks: {
+  messageId   // FK -> messages
+  order       // number, chronological within the response trace
+  type        // "text" | "tool_call" | "tool_result"
+  content     // string
+  toolName    // optional string
+  createdAt   // number
+}
+.index('by_message', ['messageId'])
+
+// REVERSED (was: presentation-only, never read during context assembly):
+// messageBlocks is now read into main-turn Gemini context (Turn Lifecycle
+// Spec §1) and folded into tier-1 compression (Turn Lifecycle Spec §8),
+// in addition to remaining client-visible for the processing-trace UI.
+// Full historical messageBlocks is fed in (not scoped to just an active
+// naming-guide window) as a v1 default, to be revisited once there's real
+// usage data. Invalid/failed tool traces are retained rather than hidden
+// from the model. Still cascades with its parent message under both chat
+// deletion paths.
 
 
 dailySummaries: {
@@ -244,8 +328,9 @@ dailySummaries: {
   userId               // FK -> profiles
   date                 // string "2026-06-29"
   content              // string, narrative journal entry
-  profileUpdated       // boolean
-  profileUpdateNotes   // optional string
+  profileUpdated       // boolean; true only when the daily-cleanup response
+                       // contains an approved typed profile patch
+  profileUpdateNotes   // optional string; factual rationale for that patch
   createdAt            // number (timestamp)
 }
 .index('by_chat', ['chatId'])
@@ -267,15 +352,21 @@ workoutContext: {
                           // session-close event anymore. A single hourly cron
                           // buckets users by profiles.timezone, finds zones at
                           // local midnight, and runs the daily-check for them —
-                          // this same cron updates workoutContext, writes
-                          // dailySummaries, and purges that day's
+                          // this same cron writes dailySummaries, conditionally
+                          // appends workoutContext, and purges that day's
                           // sessionSummaries, all together.
   sourceSessionId        // optional FK -> sessions
-  sourceDailySummaryId   // optional FK -> dailySummaries
+  sourceDailySummaryId   // optional FK -> dailySummaries; the cleanup
+                         // baseline. Later cleanup calls inject every retained
+                         // daily summary after this row, with the three most
+                         // recent available summaries always included, before
+                         // deciding whether to append another context row.
   createdAt              // number (timestamp)
 }
 .index('by_user', ['userId'])
-// Append-only, rolls over. No isCurrent flag.
+// Append-only, rolls over. No isCurrent flag. A null workout-context result
+// does not append a row; daily summaries continue accumulating from the last
+// row's sourceDailySummaryId.
 
 // CASCADE: cascades on profiles deletion. sourceSessionId can never
 // dangle since sessions are never deleted by the app.
@@ -295,6 +386,10 @@ sessionSummaries: {
 .index('by_chat_and_tier', ['chatId', 'tier'])
 // Ephemeral — purged at the app level once a chat's dailySummaries entry
 // is written (same daily-check cron, see workoutContext note above).
+// Tier 1 rows are built from each source message's ordered text/tool-call/
+// tool-result trace (i.e. include messageBlocks content, per the reversal
+// above); tier 2 compacts tier 1 summaries and therefore retains material
+// tool outcomes transitively.
 
 // CASCADE: deleted under BOTH chats deletion paths (sweep and force-delete).
 
@@ -307,6 +402,8 @@ apiUsage: {
 .index('by_user_time', ['userId', 'timestamp'])
 
 // CASCADE: cascades on profiles deletion.
+// Never fetched for or included in Gemini context — the one exception to
+// the messageBlocks reversal above; token/cost records stay backend-only.
 
 
 messageFeedback: {
@@ -367,7 +464,7 @@ userReports: {
 | Trigger | Cascades |
 |---|---|
 | `profiles` deleted | Everything **except** `userReports` |
-| `chats` retention sweep | `messages`, `cards`, `sessionSummaries`, `messageFeedback` (transitively). **Not** `dailySummaries`. |
+| `chats` retention sweep | `messages`, `cards`, `sessionSummaries`, `messageFeedback` (transitively). **Not** `dailySummaries`. (Sweep itself is currently paused — see `chats` cascade notes above.) |
 | `chats` force delete | Same as sweep, **plus** `dailySummaries` |
 | `sessions` deleted | Never happens via app logic — manual/admin only, not a designed path |
 
@@ -383,9 +480,9 @@ userReports: {
 | Skills table (reusable procedures) | Prompt/config concern, not data-modeling | Only becomes a schema question if skills need to be editable without redeploying code |
 | Importance-threshold-based reflection | Current after-session + nightly combo is reasonable for v1 | Possible v2 refinement, Stanford Generative Agents-style |
 | `messageFeedback` aggregate analytics | Explicitly deferred — not worth designing at v1 when the feature is realistically v4 | If built, design its own retention-independent data needs fresh, rather than relying on rows that happened to survive `chats` cascades |
-| `chats.cachedContext` invalidation for a chat opened mid-day | Open item carried over from the Turn Lifecycle Spec review, unresolved | Confirm whether a new chat created after `workoutContext` has already changed that day builds a fresh cache immediately, or inherits a stale cache from an earlier same-day chat |
 | Gemini-side prompt/context caching | Deferred post-v1 | Revisit once the static system prompt is finalized and its real token weight is known |
 | Multi-card free-text "Ask Eco" (ambiguous card resolution) | Deferred to the pin feature | Explicit multi-select avoids the ambiguity of resolving free text against multiple pinned cards |
+| Duplicate custom `exerciseLibrary` entries per user | Acknowledged gap, not a v1 fix | Pushed to v2 — dedup/merge strategy for near-identical custom rows |
 
 ---
 

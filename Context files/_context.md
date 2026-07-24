@@ -79,6 +79,10 @@ Full schema lives in `Final-Schema.md` in the working directory. Key facts Codex
 - `cards.state` is only `"pending" | "confirmed"` — no editing state
 - `cards.sessionId` is optional — unset on low-confidence cards until user confirms
 - `apiUsage` tracks `tokensUsed` per turn — used by paywall to gate free users
+- Main-turn Gemini context includes persisted `messageBlocks` (text, tool calls,
+  and tool results) for the raw messages in the turn context. Tool traces,
+  including invalid or failed results, stay available to Gemini; `apiUsage`
+  records never do.
 
 ### Tables at a glance
 
@@ -96,9 +100,23 @@ Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. K
 4. **Zod validation** — runs after every tool call; failure = low confidence (not an error state)
 5. **High confidence write** — creates `sessions` + `blocks` + `exercises` + confirmed `cards`
 6. **Low confidence write** — creates only `cards` (pending); full write happens on user confirm
-7. **Cards behavior** — Ask Eco sets `inDiscussion: true`; correction on confirmed card requires explicit re-confirm before `exercises` are rewritten
-8. **Memory** — hourly cron buckets users by timezone, runs daily-check at local midnight: writes `dailySummaries`, updates `workoutContext`, purges `sessionSummaries`
-9. **Compression** — token-size threshold on raw `messages` triggers `sessionSummaries` write, non-blocking, post-turn
+7. **Cards behavior** — Ask Eco sets `inDiscussion: true`; the active discussion is visibly signalled above the chat input and only its explicit **Back to deck** action flips it false; correction on confirmed card requires explicit re-confirm before `exercises` are rewritten
+8. **Memory** — the hourly `daily-cleanup` cron buckets users by timezone and runs at local midnight. One Gemini call writes a `dailySummaries` row plus optional typed profile and `workoutContext` updates, then purges that day's `sessionSummaries`; no-chat days write nothing. Its context always includes at least the two most recent available daily summaries, or all summaries since the last workout-context update when that is larger. Cleanup receives the full profile, latest context, that window, chronological tier-1/tier-2 summaries, and the uncompressed raw tail.
+9. **Compression** — token-size threshold on raw messages plus their persisted
+   `messageBlocks` triggers a non-blocking, post-turn `sessionSummaries` write.
+   Tier 1 receives each message’s ordered text/tool-call/tool-result trace;
+   Tier 2 receives the resulting Tier 1 summaries. Both tiers preserve material
+   tool outcomes, including failed or invalid results that require recovery, but
+   never receive `apiUsage`. Compression is scheduled once every Gemini turn
+   has completed, never between tool calls. When six Tier 1 rows exist, Tier 2
+   compacts exactly the five oldest and retains the sixth/newer Tier 1 tail;
+   existing Tier 2 rows remain chronological inputs, not Tier-2-to-Tier-2
+   roll-up sources. `Tier1Compression_Prompt` and
+   `Tier2Compression_Prompt` must preserve achievements, injuries, mood/tone,
+   corrections, and meaningful emotional or life-context disclosures, including
+   work stress and mental health-adjacent topics. `Daily-Cleanup_Prompt` is the
+   daily memory instruction export.
+10. **Exercise library** — global wger exercises are seeded through the internal `functions/seedWger:seed` action. The public wger API needs no key; English is language ID `2`, and reruns upsert by `wgerId`.
 
 ---
 
