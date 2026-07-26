@@ -5,8 +5,9 @@
 **Audience:** Codex (code generation) + solo dev
 **Tech stack:** React Native (Expo) + Convex (DB/functions/auth) + Convex Auth (Google OAuth) + Gemini API + TypeScript strict
 **Schema authority:** `Final-Schema.txt` — includes the lean
-`chats.cachedContext`, `messages.usedTools`, `messageBlocks`,
-`exerciseLibrary`, `userExerciseAliases`, `exercises.exerciseId`, and
+`chats.cachedContext`, `messages.usedTools`, `messageBlocks`, `guideInvocations`,
+`exerciseLibrary`, its separate embedding tables, `userExerciseAliases`,
+`exercises.exerciseId`, and
 `cards.correctsBlockId` in addition to the established chat and memory fields.
 **Behavioral authority:** Turn Lifecycle Specification (Phase 1, consolidated) + Onboarding Progress Summary (Phase 2 handoff) — this document does not restate their field-level detail, it wires them into the app.
 
@@ -54,6 +55,7 @@ eco-track/
 │   ├── workoutContext.ts
 │   ├── sessionSummaries.ts             # compression writes + purge-on-dailySummary-write
 │   ├── apiUsage.ts                     # internal mutation, called from every Gemini-calling action
+│   ├── guideInvocations.ts             # internal, write-once post-guidance review log
 │   ├── messageFeedback.ts
 │   ├── userReports.ts
 │   ├── onboardingProgress.ts           # get/set (pointer, completedResults), delete on queue-empty
@@ -81,6 +83,9 @@ eco-track/
 client-facing mutations. A resolved workout remains a pending card until the
 user confirms it; only that confirm path writes the permanent workout rows.
 `exercises.exerciseId` is required, so unresolved names can never be logged.
+Post-call Zod validation also requires a non-empty resolved `exerciseId` on
+every extracted exercise before either card-write path can run; confirmation
+never creates a fallback exercise-library row.
 
 ---
 
@@ -104,17 +109,28 @@ actions/runTurn.ts [action]
       - sessionSummaries if raw messages exceed token threshold
       - cards where inDiscussion=true — pinned and injected,
         labeled "Card 1" / "Card 2" by stack position (ephemeral, request-scoped only)
-   2. Call 1 — tools: [log_workout, Get_data, Correct_log], responseSchema: { reply }.
+   2. Call 1 — tools: [log_workout, Get_data, Correct_log,
+      search_exercise_library, calculate], plus `get_new_exercise_guidance` and
+      `create_custom_exercise` only while the trailing guide-marker streak is
+      active; responseSchema: { reply }. Tool calls are sequential and share
+      the five-follow-up cap.
       `Get_data` selects its read by optional arguments rather than a collection
       type: `collectionPoints` for profile fields, `dailySummaryDate`
       (`YYYY-MM-DD`) for one daily summary, and `dateRange` / `exerciseId` for
       historical exercises. It returns no database IDs.
-   3. Validate and resolve every exercise identity before a card exists.
-      Generic or ambiguous names remain plain conversation; aliases and the
-      capped naming loop supply the canonical identity.
-   4. Write one resolved pending card. Confirm is the only normal create path
-      for sessions/blocks/exercises and aliases. Historical corrections carry
-      correctsBlockId and are also re-confirmed.
+   3. Resolve each concrete exercise identity through exact user aliases, then
+      user-alias vectors, then separate global and personal library vectors.
+      `gemini-embedding-001` uses 768 dimensions; 0.82 is the provisional
+      auto-resolution threshold. Below-threshold results remain conversational;
+      no-match resolution may call naming guidance without a consent flag.
+   4. Write each fully resolved block atomically. One message may therefore
+      create multiple cards while an unresolved sibling remains conversational.
+      Confirm is the normal path that persists custom exercise-library entries
+      and confirmed aliases. The guide-active `create_custom_exercise` tool is
+      the deliberate exception: it writes and embeds a personal,
+      description-required library row before `log_workout`, but never writes a
+      confirmed alias. Historical corrections carry
+      `correctsBlockId` and are also re-confirmed.
    5. The Eco message row is created at processing start; its final text and
       ordered messageBlocks are updated reactively as the turn proceeds.
 ```
@@ -191,10 +207,19 @@ No Redux/Zustand. Convex is the only state manager for anything schema-backed; l
 This section is the Turn Lifecycle Spec, wired into files rather than re-derived:
 
 - **`functions/messages.processTurn`** implements the main turn: lean context
-  assembly, Call 1 with `log_workout`, `Get_data`, and `Correct_log`, identity
-  resolution before card creation, reactive trace writes to `messageBlocks`,
+  assembly, Call 1 with five always-available tools and the two guide-active
+  tools (including sequential exercise search, naming guidance, and custom
+  creation), block-level identity resolution before card creation,
+  reactive trace writes to `messageBlocks`,
   and reinjection of those ordered blocks on later main turns. Gemini runs only
-  in this Convex action layer. `apiUsage` remains excluded from model context.
+  in this Convex action layer. `apiUsage` and `guideInvocations` remain excluded
+  from model context. Each executed `get_new_exercise_guidance` call writes one
+  backend-only `guideInvocations` record after execution; it is a safety/tuning
+  review log, not the
+  naming-guide active-state source.
+- **`lib/calculate.ts`** implements the always-available, pure PT-math tool.
+  It has no Convex DB access, never reads profile unit preferences, and uses a
+  closed allowlisted arithmetic parser rather than `eval()` or `Function()`.
 - **`actions/runOnboardingTask.ts`** is the same shape at a smaller scale: one task-scoped tool call (`save_goals`, `save_injuries`, etc.) per turn, with only that task's prompt fragment plus a thin "already have: X, Y" carry-forward — never the full onboarding script, never prior tasks' full transcripts (Onboarding Handoff §1).
 - **Cards behavior** (§5 of Turn Lifecycle) is implemented in `convex/cards.ts`:
   - Direct manual edit on a pending card → local, instant, same confirm path as normal.

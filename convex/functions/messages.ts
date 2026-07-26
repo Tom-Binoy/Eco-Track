@@ -4,8 +4,9 @@ import { v } from 'convex/values'
 import { internal } from '../_generated/api'
 import type { Doc, Id } from '../_generated/dataModel'
 import { action, internalMutation, internalQuery, query } from '../_generated/server'
-import { beginGeminiTurn, continueGeminiTurn, decideExerciseName, type GeminiContext, type LeanContext } from '../lib/gemini'
-import { type ToolCallData, validateToolCall } from '../lib/validation'
+import { beginGeminiTurn, continueGeminiTurn, getNewExerciseGuidance, type GeminiContext, type LeanContext } from '../lib/gemini'
+import { executeCalculate } from '../lib/calculate'
+import { createCustomExerciseSchema, newExerciseGuidanceInputSchema, type ToolCallData, validateToolCall } from '../lib/validation'
 
 const recentMessageLimit = 50
 const guideMarker = 'exercise_naming_guide_active'
@@ -73,7 +74,7 @@ export const setMessageSession = internalMutation({ args: { messageId: v.id('mes
 export const appendBlock = internalMutation({ args: { messageId: v.id('messages'), order: v.number(), type: v.union(v.literal('text'), v.literal('tool_call'), v.literal('tool_result')), content: v.string(), toolName: v.optional(v.string()) }, handler: async (ctx, args) => await ctx.db.insert('messageBlocks', { ...args, createdAt: Date.now() }) })
 export const getBlocks = query({ args: { messageId: v.id('messages') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const message = await ctx.db.get(args.messageId); const chat = message === null ? null : await ctx.db.get(message.chatId); if (profile === null || message === null || chat?.userId !== profile._id) return { error: 'Message not found', blocks: [] }; return { blocks: await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).take(50) } } })
 
-export const writeLowConfidenceTurn = internalMutation({ args: { chatId: v.id('chats'), messageId: v.id('messages'), parsedData: v.any(), rawOutput: v.string(), correctsBlockId: v.optional(v.id('blocks')) }, handler: async (ctx, args): Promise<{ cardId: Id<'cards'> }> => ({ cardId: await ctx.db.insert('cards', { chatId: args.chatId, messageId: args.messageId, rawOutput: args.rawOutput, parsedData: args.parsedData, state: 'pending', order: 0, inDiscussion: false, correctsBlockId: args.correctsBlockId, createdAt: Date.now() }) }) })
+export const writeLowConfidenceTurn = internalMutation({ args: { chatId: v.id('chats'), messageId: v.id('messages'), parsedData: v.any(), rawOutput: v.string(), order: v.optional(v.number()), correctsBlockId: v.optional(v.id('blocks')) }, handler: async (ctx, args): Promise<{ cardId: Id<'cards'> }> => ({ cardId: await ctx.db.insert('cards', { chatId: args.chatId, messageId: args.messageId, rawOutput: args.rawOutput, parsedData: args.parsedData, state: 'pending', order: args.order ?? 0, inDiscussion: false, correctsBlockId: args.correctsBlockId, createdAt: Date.now() }) }) })
 
 export const getRecent = query({ args: { chatId: v.id('chats'), limit: v.number() }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const chat = await ctx.db.get(args.chatId); if (profile === null || chat === null || chat.userId !== profile._id) return { error: 'Chat not found', messages: [] }; return { messages: (await ctx.db.query('messages').withIndex('by_chat', (q) => q.eq('chatId', args.chatId)).order('desc').take(Math.min(Math.max(Math.floor(args.limit), 1), recentMessageLimit))).reverse() } } })
 export const getAllForCompression = internalQuery({
@@ -102,28 +103,60 @@ export const processTurn = action({
     }
     let response = geminiTurn.response
     const usedTools: string[] = response.functionCall === null ? [] : [response.functionCall.name]
+    if (context.guideActive) usedTools.push(guideMarker)
     let blockOrder = 0
     await ctx.runMutation(internal.functions.messages.appendBlock, { messageId, order: blockOrder, type: response.functionCall === null ? 'text' : 'tool_call', content: response.functionCall === null ? response.text : response.functionCall.name, toolName: response.functionCall?.name })
     let historicalExerciseDetailsFetched = false
     const historicalBlocks = new Map<string, Id<'blocks'>>()
     let tokensUsed = response.tokensUsed
-    for (let callCount = 0; response.functionCall?.name === 'Get_data' && callCount < 2; callCount += 1) {
+    for (let callCount = 0; response.functionCall !== null && ['Get_data', 'search_exercise_library', 'get_new_exercise_guidance', 'create_custom_exercise', 'calculate'].includes(response.functionCall.name) && callCount < 5; callCount += 1) {
+      const toolName = response.functionCall.name
       const toolArgs = response.functionCall.args
       const request = typeof toolArgs === 'object' && toolArgs !== null ? toolArgs : {}
-      const dateRange = 'dateRange' in request && typeof request.dateRange === 'object' && request.dateRange !== null ? request.dateRange : null
-      const startDate = dateRange !== null && 'startDate' in dateRange && typeof dateRange.startDate === 'string' ? dateRange.startDate : undefined
-      const endDate = dateRange !== null && 'endDate' in dateRange && typeof dateRange.endDate === 'string' ? dateRange.endDate : undefined
-      const exerciseId = 'exerciseId' in request && typeof request.exerciseId === 'string' ? request.exerciseId : undefined
-      const dailySummaryDate = 'dailySummaryDate' in request && typeof request.dailySummaryDate === 'string' ? request.dailySummaryDate : undefined
-      const collectionPoints = 'collectionPoints' in request && Array.isArray(request.collectionPoints) ? request.collectionPoints.filter((point): point is string => typeof point === 'string') : undefined
-      const data = await ctx.runQuery(internal.functions.exercises.getDataForTurn, { userId: context.profile._id, startDate, endDate, exerciseId, dailySummaryDate, collectionPoints })
-      const historicalExercises = data.exercises ?? []
-      for (const item of historicalExercises) historicalBlocks.set(item.exerciseId, item.blockId as Id<'blocks'>)
-      const dataForModel = { profile: data.profile, dailySummary: data.dailySummary, exercises: historicalExercises.map(({ exerciseId: label, name, date, sets }) => exerciseId === undefined ? { exerciseId: label, name, date } : { exerciseId: label, name, date, sets }) }
-      historicalExerciseDetailsFetched = historicalExerciseDetailsFetched || exerciseId !== undefined
+      let dataForModel: object
+      if (toolName === 'calculate') {
+        dataForModel = executeCalculate(toolArgs)
+      } else if (toolName === 'Get_data') {
+        const dateRange = 'dateRange' in request && typeof request.dateRange === 'object' && request.dateRange !== null ? request.dateRange : null
+        const startDate = dateRange !== null && 'startDate' in dateRange && typeof dateRange.startDate === 'string' ? dateRange.startDate : undefined
+        const endDate = dateRange !== null && 'endDate' in dateRange && typeof dateRange.endDate === 'string' ? dateRange.endDate : undefined
+        const exerciseId = 'exerciseId' in request && typeof request.exerciseId === 'string' ? request.exerciseId : undefined
+        const dailySummaryDate = 'dailySummaryDate' in request && typeof request.dailySummaryDate === 'string' ? request.dailySummaryDate : undefined
+        const collectionPoints = 'collectionPoints' in request && Array.isArray(request.collectionPoints) ? request.collectionPoints.filter((point): point is string => typeof point === 'string') : undefined
+        const data: { profile: unknown; dailySummary: unknown; exercises?: Array<{ exerciseId: string; blockId: string; name: string; date: string; sets: ToolCallData['blocks'][number]['exercises'][number]['sets'] }> } = await ctx.runQuery(internal.functions.exercises.getDataForTurn, { userId: context.profile._id, startDate, endDate, exerciseId, dailySummaryDate, collectionPoints })
+        const historicalExercises = data.exercises ?? []
+        for (const item of historicalExercises) historicalBlocks.set(item.exerciseId, item.blockId as Id<'blocks'>)
+        dataForModel = { profile: data.profile, dailySummary: data.dailySummary, exercises: historicalExercises.map(({ exerciseId: label, name, date, sets }) => exerciseId === undefined ? { exerciseId: label, name, date } : { exerciseId: label, name, date, sets }) }
+        historicalExerciseDetailsFetched = historicalExerciseDetailsFetched || exerciseId !== undefined
+      } else if (toolName === 'search_exercise_library') {
+        const rawInput = 'rawInput' in request && typeof request.rawInput === 'string' ? request.rawInput : ''
+        const search: { autoResolved: { exerciseId: Id<'exerciseLibrary'>; canonicalName: string; score: number } | null; candidates: Array<{ _id: Id<'exerciseLibrary'>; canonicalName: string; score: number }> } | null = rawInput.length === 0 ? null : await ctx.runAction(internal.functions.exerciseLibrary.searchForTurn, { userId: context.profile._id, rawInput })
+        dataForModel = search === null ? { error: 'A concrete exercise name is required.' } : { rawInput, autoResolved: search.autoResolved, candidates: search.candidates.map((candidate: { _id: Id<'exerciseLibrary'>; canonicalName: string; score: number }) => ({ exerciseId: candidate._id, canonicalName: candidate.canonicalName, score: candidate.score })) }
+        if (search !== null && search.autoResolved === null && !usedTools.includes(guideMarker)) usedTools.push(guideMarker)
+      } else if (toolName === 'get_new_exercise_guidance') {
+        const parsed = newExerciseGuidanceInputSchema.safeParse(toolArgs)
+        if (!parsed.success) dataForModel = { outcome: 'still_ambiguous' }
+        else {
+          try { dataForModel = await getNewExerciseGuidance(parsed.data) } catch { dataForModel = { outcome: 'still_ambiguous' } }
+          await ctx.runMutation(internal.functions.exerciseLibrary.recordGuideInvocation, { userId: context.profile._id, messageId })
+          if ('outcome' in dataForModel && dataForModel.outcome !== 'still_ambiguous') {
+            const markerIndex = usedTools.lastIndexOf(guideMarker)
+            if (markerIndex !== -1) usedTools.splice(markerIndex, 1)
+          }
+        }
+      } else {
+        const parsed = createCustomExerciseSchema.safeParse(toolArgs)
+        if (!parsed.success) dataForModel = { error: 'Custom exercise details are invalid.' }
+        else dataForModel = await ctx.runAction(internal.functions.exerciseLibrary.createCustomExerciseAction, {
+          userId: context.profile._id,
+          messageId,
+          input: parsed.data,
+        })
+      }
       blockOrder += 1
-      await ctx.runMutation(internal.functions.messages.appendBlock, { messageId, order: blockOrder, type: 'tool_result', content: JSON.stringify(dataForModel), toolName: 'Get_data' })
-      try { response = await continueGeminiTurn(geminiTurn.chat, 'Get_data', dataForModel) } catch { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: 'Eco could not respond right now. Please try again.', usedTools }); return { ecoText: '', error: 'Eco could not respond right now. Please try again.' } }
+      await ctx.runMutation(internal.functions.messages.appendBlock, { messageId, order: blockOrder, type: 'tool_result', content: JSON.stringify(dataForModel), toolName })
+      try { response = await continueGeminiTurn(geminiTurn.chat, toolName, dataForModel) } catch { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: 'Eco could not respond right now. Please try again.', usedTools }); return { ecoText: '', error: 'Eco could not respond right now. Please try again.' } }
+      if (toolName === 'get_new_exercise_guidance' && 'outcome' in dataForModel && dataForModel.outcome === 'still_ambiguous' && response.functionCall !== null) response = { functionCall: null, text: 'Can you describe the movement a little more — especially the body position or equipment?', tokensUsed: response.tokensUsed }
       tokensUsed += response.tokensUsed
       if (response.functionCall !== null) usedTools.push(response.functionCall.name)
       blockOrder += 1
@@ -132,7 +165,7 @@ export const processTurn = action({
     await ctx.runMutation(internal.functions.apiUsage.logUsage, { userId: context.profile._id, tokensUsed, timestamp: Date.now() })
     const storedTools = usedTools.length === 0 ? undefined : usedTools
     if (response.functionCall === null) { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: response.text, usedTools, isFinalGeminiResponse: true }); return { ecoText: response.text } }
-    if (response.functionCall.name === 'Get_data') { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: 'I need a little more detail before I can make that correction.', usedTools: storedTools }); return { ecoText: 'I need a little more detail before I can make that correction.' } }
+    if (['Get_data', 'search_exercise_library', 'get_new_exercise_guidance', 'create_custom_exercise', 'calculate'].includes(response.functionCall.name)) { const reply = 'I need a little more detail before I can resolve that.'; await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: reply, usedTools: storedTools, isFinalGeminiResponse: true }); return { ecoText: reply } }
     if (response.functionCall.name === 'Correct_log') {
       const correction = response.functionCall.args
       const validation = typeof correction === 'object' && correction !== null && 'parsedData' in correction ? validateToolCall(correction.parsedData) : { isValid: false as const, parsedData: {} }
@@ -153,27 +186,23 @@ export const processTurn = action({
     if (response.functionCall.name !== 'log_workout') { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: response.text, usedTools, isFinalGeminiResponse: true }); return { ecoText: response.text } }
     const validation = validateToolCall(response.functionCall.args)
     if (!validation.isValid) { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: response.text, usedTools, isFinalGeminiResponse: true }); return { ecoText: response.text } }
-    const resolved: Array<{ exerciseId?: Id<'exerciseLibrary'>; proposedName?: string }> = []
-    for (const exercise of validation.parsedData.blocks.flatMap((block) => block.exercises)) {
-      const lookup = await ctx.runQuery(internal.functions.exerciseLibrary.findForResolution, { userId: context.profile._id, rawInput: exercise.name })
-      if (lookup.aliasExercise !== null) { resolved.push({ exerciseId: lookup.aliasExercise._id }); continue }
-      await ctx.runMutation(internal.functions.messages.appendBlock, { messageId, order: resolved.length + 1, type: 'tool_result', content: 'Searching your exercise library…', toolName: 'search_exercise_library' })
-      let decision
-      try { decision = await decideExerciseName(exercise.name, lookup.candidates) } catch { decision = { decision: 'still_ambiguous' as const, candidateIds: lookup.candidates.map((candidate) => candidate._id), reply: 'Which exercise did you mean?' } }
-      if (decision.decision === 'still_ambiguous') { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: decision.reply, usedTools: [guideMarker], isFinalGeminiResponse: true }); return { ecoText: decision.reply } }
-      if (decision.decision === 'matched' && decision.exerciseId !== undefined) { resolved.push({ exerciseId: decision.exerciseId as Id<'exerciseLibrary'> }); continue }
-      resolved.push({ proposedName: decision.proposedName ?? exercise.name })
+    const parsedData = validation.parsedData
+    const resolvedBlocks = parsedData.blocks.filter((block) => block.exercises.every((exercise) => exercise.exerciseId !== undefined || exercise.proposedName !== undefined))
+    if (resolvedBlocks.length === 0) { const reply = 'Which exercise did you mean?'; await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: reply, usedTools: [guideMarker], isFinalGeminiResponse: true }); return { ecoText: reply } }
+    let cardId: Id<'cards'> | undefined
+    for (const [blockIndex, block] of resolvedBlocks.entries()) {
+      const blockData: ToolCallData = { ...parsedData, blocks: [block] }
+      if (!blockData.needsClarification) {
+        const result: { cardId?: Id<'cards'>; sessionId?: Id<'sessions'>; error?: string } = await ctx.runMutation(internal.functions.cards.writeHighConfidenceCard, { chatId: args.chatId, messageId, userId: context.profile._id, parsedData: blockData, rawOutput: JSON.stringify(blockData), order: blockIndex })
+        if (result.error !== undefined || result.cardId === undefined || result.sessionId === undefined) { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: response.text, usedTools: storedTools, isFinalGeminiResponse: true }); return { ecoText: response.text, error: result.error ?? 'Could not save workout' } }
+        await ctx.runMutation(internal.functions.messages.setMessageSession, { messageId, sessionId: result.sessionId })
+        cardId = result.cardId
+      } else {
+        const result: { cardId: Id<'cards'> } = await ctx.runMutation(internal.functions.messages.writeLowConfidenceTurn, { chatId: args.chatId, messageId, parsedData: blockData, rawOutput: JSON.stringify(blockData), order: blockIndex })
+        cardId = result.cardId
+      }
     }
-    const parsedData = { ...validation.parsedData, blocks: validation.parsedData.blocks.map((block, blockIndex) => ({ ...block, exercises: block.exercises.map((exercise, exerciseIndex) => ({ ...exercise, ...resolved[validation.parsedData.blocks.slice(0, blockIndex).reduce((count, previous) => count + previous.exercises.length, 0) + exerciseIndex] })) })) }
-    if (!parsedData.needsClarification) {
-      const result: { cardId?: Id<'cards'>; sessionId?: Id<'sessions'>; error?: string } = await ctx.runMutation(internal.functions.cards.writeHighConfidenceCard, { chatId: args.chatId, messageId, userId: context.profile._id, parsedData, rawOutput: JSON.stringify(parsedData) })
-      if (result.error !== undefined || result.cardId === undefined || result.sessionId === undefined) { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: response.text, usedTools: storedTools, isFinalGeminiResponse: true }); return { ecoText: response.text, error: result.error ?? 'Could not save workout' } }
-      await ctx.runMutation(internal.functions.messages.setMessageSession, { messageId, sessionId: result.sessionId })
-      await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: response.text, usedTools: storedTools, isFinalGeminiResponse: true })
-      return { ecoText: response.text, cardId: result.cardId }
-    }
-    const result: { cardId: Id<'cards'> } = await ctx.runMutation(internal.functions.messages.writeLowConfidenceTurn, { chatId: args.chatId, messageId, parsedData, rawOutput: JSON.stringify(parsedData) })
     await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: response.text, usedTools: storedTools, isFinalGeminiResponse: true })
-    return { ecoText: response.text, cardId: result.cardId }
+    return { ecoText: response.text, cardId }
   },
 })

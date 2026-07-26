@@ -1,26 +1,25 @@
 import { getAuthUserId } from '@convex-dev/auth/server'
 import { v } from 'convex/values'
 
+import { internal } from '../_generated/api'
 import type { Doc, Id } from '../_generated/dataModel'
 import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from '../_generated/server'
+import { normalizeExerciseInput } from '../lib/exerciseNormalization'
 import { toolCallSchema, type ToolCallData } from '../lib/validation'
 
 type CardAccess = { card: Doc<'cards'>; profile: Doc<'profiles'> } | { error: string }
-function normalized(value: string): string { return value.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() }
 async function accessCard(ctx: QueryCtx | MutationCtx, cardId: Id<'cards'>): Promise<CardAccess> { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const card = await ctx.db.get(cardId); if (profile === null || card === null) return { error: 'Card not found' }; const chat = await ctx.db.get(card.chatId); return chat?.userId === profile._id ? { card, profile } : { error: 'Card not found' } }
 
-async function resolveExerciseId(ctx: MutationCtx, exercise: ToolCallData['blocks'][number]['exercises'][number], userId: Id<'profiles'>): Promise<Id<'exerciseLibrary'> | null> {
-  if (exercise.exerciseId !== undefined) { const entry = await ctx.db.get(exercise.exerciseId as Id<'exerciseLibrary'>); if (entry !== null) return entry._id }
-  const name = exercise.proposedName ?? exercise.name
-  if (name.length === 0) return null
-  return await ctx.db.insert('exerciseLibrary', { canonicalName: name, aliases: [], searchBlob: normalized(name), userId, source: 'custom', createdAt: Date.now() })
+async function resolveExerciseId(ctx: MutationCtx, exercise: ToolCallData['blocks'][number]['exercises'][number]): Promise<Id<'exerciseLibrary'> | null> {
+  const entry = await ctx.db.get(exercise.exerciseId as Id<'exerciseLibrary'>)
+  return entry?._id ?? null
 }
 async function writeBlockExercises(ctx: MutationCtx, blockId: Id<'blocks'>, data: ToolCallData, userId: Id<'profiles'>, weightUnit: 'kg' | 'lbs'): Promise<{ error?: string }> {
-  for (const block of data.blocks) for (const exercise of block.exercises) { const exerciseId = await resolveExerciseId(ctx, exercise, userId); if (exerciseId === null) return { error: 'Exercise naming must be resolved before confirmation' }; await ctx.db.insert('exercises', { blockId, userId, exerciseId, name: exercise.name, weightUnit, order: exercise.order, sets: exercise.sets, createdAt: Date.now() }); const raw = normalized(exercise.name); const existing = await ctx.db.query('userExerciseAliases').withIndex('by_user_and_raw', (q) => q.eq('userId', userId).eq('rawInputNormalized', raw)).unique(); if (existing === null) await ctx.db.insert('userExerciseAliases', { userId, rawInputNormalized: raw, exerciseId, source: 'confirmed', createdAt: Date.now(), lastUsedAt: Date.now() }); else await ctx.db.patch(existing._id, { exerciseId, source: 'confirmed', lastUsedAt: Date.now() }) }
+  for (const block of data.blocks) for (const exercise of block.exercises) { const exerciseId = await resolveExerciseId(ctx, exercise); if (exerciseId === null) return { error: 'Exercise naming must be resolved before confirmation' }; await ctx.db.insert('exercises', { blockId, userId, exerciseId, name: exercise.name, weightUnit, order: exercise.order, sets: exercise.sets, createdAt: Date.now() }); const raw = normalizeExerciseInput(exercise.name); const existing = await ctx.db.query('userExerciseAliases').withIndex('by_user_and_raw', (q) => q.eq('userId', userId).eq('rawInputNormalized', raw)).unique(); const aliasId = existing === null ? await ctx.db.insert('userExerciseAliases', { userId, rawInputNormalized: raw, exerciseId, source: 'confirmed', createdAt: Date.now(), lastUsedAt: Date.now() }) : existing._id; if (existing !== null) await ctx.db.patch(existing._id, { exerciseId, source: 'confirmed', lastUsedAt: Date.now() }); await ctx.scheduler.runAfter(0, internal.functions.exerciseLibrary.embedConfirmedEntries, { exerciseIds: [exerciseId], aliasIds: [aliasId] }) }
   return {}
 }
 
-export const getByMessage = query({ args: { messageId: v.id('messages') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const card = await ctx.db.query('cards').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).first(); if (profile === null || card === null) return null; const chat = await ctx.db.get(card.chatId); return chat?.userId === profile._id ? card : null } })
+export const getByMessage = query({ args: { messageId: v.id('messages') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const cards = await ctx.db.query('cards').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).take(50); const firstCard = cards[0]; if (profile === null || firstCard === undefined) return []; const chat = await ctx.db.get(firstCard.chatId); return chat?.userId === profile._id ? cards.sort((left, right) => left.order - right.order) : [] } })
 
 export const getDiscussionCard = query({ args: { chatId: v.id('chats') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const chat = await ctx.db.get(args.chatId); if (profile === null || chat?.userId !== profile._id) return null; return (await ctx.db.query('cards').withIndex('by_chat', (q) => q.eq('chatId', args.chatId)).take(50)).find((card) => card.inDiscussion) ?? null } })
 
@@ -53,7 +52,7 @@ export const confirmCard = mutation({
 })
 
 export const writeHighConfidenceCard = internalMutation({
-  args: { chatId: v.id('chats'), messageId: v.id('messages'), userId: v.id('profiles'), parsedData: v.any(), rawOutput: v.string() },
+  args: { chatId: v.id('chats'), messageId: v.id('messages'), userId: v.id('profiles'), parsedData: v.any(), rawOutput: v.string(), order: v.optional(v.number()) },
   handler: async (ctx, args) => {
     const validation = toolCallSchema.safeParse(args.parsedData)
     if (!validation.success) return { error: 'The workout data is invalid' }
@@ -67,7 +66,7 @@ export const writeHighConfidenceCard = internalMutation({
       const write = await writeBlockExercises(ctx, blockId, { ...validation.data, blocks: [block] }, profile._id, profile.weightUnit)
       if (write.error !== undefined) return write
     }
-    const cardId = await ctx.db.insert('cards', { chatId: args.chatId, messageId: args.messageId, sessionId, rawOutput: args.rawOutput, parsedData: validation.data, state: 'confirmed', order: 0, inDiscussion: false, createdAt: Date.now() })
+    const cardId = await ctx.db.insert('cards', { chatId: args.chatId, messageId: args.messageId, sessionId, rawOutput: args.rawOutput, parsedData: validation.data, state: 'confirmed', order: args.order ?? 0, inDiscussion: false, createdAt: Date.now() })
     return { cardId, sessionId }
   },
 })

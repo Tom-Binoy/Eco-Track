@@ -15,7 +15,7 @@ interface MessageBubbleProps {
 export function MessageBubble({ message, onAskEco }: MessageBubbleProps): ReactElement {
   const isUser = message.role === 'user'
   const [showTrace, setShowTrace] = useState(false)
-  const card = useQuery(api.functions.cards.getByMessage, { messageId: message.messageId })
+  const cards = useQuery(api.functions.cards.getByMessage, { messageId: message.messageId })
   const trace = useQuery(api.functions.messages.getBlocks, isUser ? 'skip' : { messageId: message.messageId })
   const time = new Intl.DateTimeFormat([], {
     hour: '2-digit',
@@ -39,7 +39,7 @@ export function MessageBubble({ message, onAskEco }: MessageBubbleProps): ReactE
           </View>
         ) : null}
         <Text style={[styles.time, isUser ? styles.userTime : styles.ecoTime]}>{time}</Text>
-        {!isUser && card !== null && card !== undefined ? <WorkoutCard card={card} onAskEco={onAskEco} /> : null}
+        {!isUser ? cards?.map((card) => <WorkoutCard key={card._id} card={card} onAskEco={onAskEco} />) : null}
       </View>
     </View>
   )

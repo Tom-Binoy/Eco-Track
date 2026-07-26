@@ -1,5 +1,6 @@
 import { internal } from '../_generated/api'
 import { internalAction } from '../_generated/server'
+import { buildExerciseSearchBlob } from '../lib/exerciseNormalization'
 
 type WgerPage<T> = { next: string | null; results: T[] }
 type Translation = { language: number; name: string; description?: string; aliases?: Array<{ alias: string }> }
@@ -7,8 +8,6 @@ type Exercise = { id: number; category?: { name?: string }; equipment?: Array<{ 
 
 const API = 'https://wger.de/api/v2/'
 const ENGLISH_LANGUAGE_ID = 2 // Confirmed from the live /language/ endpoint.
-
-function normalize(value: string): string { return value.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() }
 
 async function fetchAll<T>(url: string): Promise<T[]> {
   const results: T[] = []
@@ -33,9 +32,12 @@ export const seed = internalAction({
       if (translation === undefined) return []
       const aliases = (translation.aliases ?? []).map((item) => item.alias).filter(Boolean)
       const muscles = [...(exercise.muscles ?? []), ...(exercise.muscles_secondary ?? [])].map((item) => item.name_en || item.name).filter((item): item is string => item !== undefined && item !== '')
-      return [{ wgerId: exercise.id, canonicalName: translation.name, aliases, searchBlob: normalize([translation.name, ...aliases].join(' ')), category: exercise.category?.name, equipment: (exercise.equipment ?? []).map((item) => item.name).filter((item): item is string => item !== undefined && item !== '').join(', ') || undefined, muscleGroup: muscles[0], allMuscles: muscles.length > 0 ? muscles : undefined, description: translation.description }]
+      return [{ wgerId: exercise.id, canonicalName: translation.name, aliases, searchBlob: buildExerciseSearchBlob(translation.name, aliases, translation.description), category: exercise.category?.name, equipment: (exercise.equipment ?? []).map((item) => item.name).filter((item): item is string => item !== undefined && item !== '').join(', ') || undefined, muscleGroup: muscles[0], allMuscles: muscles.length > 0 ? muscles : undefined, description: translation.description }]
     })
-    for (let start = 0; start < mapped.length; start += 50) await ctx.runMutation(internal.functions.exerciseLibrary.upsertWgerBatch, { exercises: mapped.slice(start, start + 50) })
+    for (let start = 0; start < mapped.length; start += 50) {
+      const ids = await ctx.runMutation(internal.functions.exerciseLibrary.upsertWgerBatch, { exercises: mapped.slice(start, start + 50) })
+      await ctx.runAction(internal.functions.exerciseLibrary.embedConfirmedEntries, { exerciseIds: ids, aliasIds: [] })
+    }
     return { imported: mapped.length }
   },
 })

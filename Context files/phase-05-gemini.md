@@ -10,6 +10,38 @@
 
 Replace the Phase 4 placeholder response with the full Gemini turn lifecycle. This is the most complex phase. Read the Turn Lifecycle Specification in full before writing any code. Every section of that spec maps directly to code in this phase.
 
+> **Exercise-resolution update (locked):** The illustrative single-tool snippets
+> below are superseded for Call 1 by `Turn-Lifecycle-Specification.txt` and the
+> Exercise Resolution Build Brief. Call 1 exposes `log_workout`, `Get_data`,
+> `Correct_log`, `search_exercise_library`, and `calculate` always. `calculate`
+> is unrelated to exercise resolution and is never guide-marker-gated. The existing guide-marker
+> streak conditionally adds `get_new_exercise_guidance` and
+> `create_custom_exercise`; tool follow-ups are sequential and share the
+> five-follow-up cap. Exercise resolution uses the documented alias/vector
+> waterfall before a block is written.
+>
+> **Calculation-tool update (locked):** `calculate` is pure deterministic
+> PT-scope computation. It covers 1RM, percentage, compatible-unit conversion,
+> plate loading, volume, pace, and an allowlisted arithmetic fallback. It makes
+> no DB reads/writes, requires explicit units, and returns structured numeric
+> errors. Eco must use it for every user-checkable numeric result rather than
+> calculating in free text; `expression` is only a last-resort pure-arithmetic
+> fallback outside named operations. The full contract is in
+> `Turn-Lifecycle-Specification.txt` §2.
+>
+> **Implementation status (2026-07-26):** The standalone, read-only resolver
+> exists as `functions/exerciseLibrary:searchForTurn`. During an active guide,
+> `get_new_exercise_guidance` receives the raw phrase and exact near-miss
+> candidates and returns only `resolved_existing`, `resolved_custom`, or
+> `still_ambiguous`; it does not create exercises or aliases. The turn action
+> writes its one review-log row after guidance executes, and the system prompt
+> prevents vague wording from being stored as an alias. Before logging an
+> exercise not confidently resolved by a known alias, Eco proactively invokes
+> the read-only search without asking permission; consent remains at card
+> confirmation. It walks near misses conversationally, logs resolved-existing
+> IDs directly, and creates a custom exercise before logging a resolved custom
+> exercise.
+
 The turn lifecycle runs as a **Convex action** (not a mutation) because it calls an external API (Gemini). Actions can call mutations internally.
 
 ---
@@ -547,6 +579,24 @@ export const logUsage = mutation({
 })
 ```
 
+### 8. `guideInvocations` Review Logging
+
+After each `get_new_exercise_guidance` execution, write exactly one backend-only
+review row. This write happens after execution, is not model-invoked, and must
+not be added to any tool return schema. It is not a live naming-guide state
+tracker: the existing `messages.usedTools` marker streak remains the sole
+active/inactive signal.
+
+```ts
+await ctx.runMutation(internal.functions.exerciseLibrary.recordGuideInvocation, {
+  userId: context.profile._id,
+  messageId,
+})
+```
+
+Like `apiUsage`, `guideInvocations` is never read into a Gemini prompt. It
+cascades with its parent message under both chat deletion paths.
+
 ---
 
 ## Done Checklist
@@ -556,6 +606,8 @@ export const logUsage = mutation({
 - [ ] Ambiguous input → pending `cards` row written, no `sessions`/`blocks`/`exercises`
 - [ ] Eco's response appears in the message list (reactive from Convex)
 - [ ] `apiUsage` row written after every Gemini call
+- [ ] `guideInvocations` row written once after every executed
+  `get_new_exercise_guidance` call
 - [ ] Context assembly pulls from `cachedContext` on second message of same chat
 - [ ] `npx tsc --noEmit` reports zero errors
 - [ ] Gemini API key is in Convex environment variables (not in code)

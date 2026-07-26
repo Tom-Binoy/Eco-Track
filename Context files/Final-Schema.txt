@@ -36,12 +36,22 @@ Reconciled against the Turn Lifecycle Spec (consolidated):
   preferences, active injuries, and `workoutContext`; it is no longer a full
   `profiles` snapshot.
 - **Exercise identity** — `exerciseLibrary` and `userExerciseAliases` were
-  added. Every logged `exercises` row now has the required `exerciseId` FK;
-  its `name` remains the original extracted string.
+  added, with separate `exerciseLibraryEmbeddings` and
+  `userExerciseAliasEmbeddings` tables for 768-dimension semantic resolution.
+  Every logged `exercises` row now has the required `exerciseId` FK; its `name`
+  remains the original extracted string.
 - **Corrections and trace** — `cards.correctsBlockId`, `messages.usedTools`,
-  and `messageBlocks` support historical corrections, guide state, the
+  and `messageBlocks` support historical corrections, guide trace/history, the
   client-visible processing trace, AND (reversed from earlier phases —
   see next bullet) main-turn Gemini context and tier-1 compression.
+- **Naming-guide tool availability (reversal)** — guide-active state gates
+  availability of `get_new_exercise_guidance`; this reverses the prior lock
+  that the guide system lived in the standard Call 1 toolset with no
+  conditional-unlocking flag. `create_custom_exercise` is new and is gated by
+  the same guide-active state. The always-available Call 1 tools are unchanged:
+  `log_workout`, `Get_data`, `Correct_log`, and `search_exercise_library`.
+  No separate table or field stores live naming-guide state: the trailing
+  `messages.usedTools` guide-marker streak is the sole active/inactive signal.
   `discussionType`, `guideActiveTurns`, and `hiddenTrace` are intentionally
   absent.
 - **`messageBlocks` now read into context/compression (reversal)** —
@@ -166,7 +176,8 @@ messages: {
                 // explicit “bring card back to deck” action; it never drives
                 // prompt injection.
   usedTools     // optional string[] of real tool names invoked this turn,
-                // plus the backend-only exercise_naming_guide_active marker.
+                // plus the backend-only exercise_naming_guide_active marker;
+                // historical trace only, not a live guide-state field.
 }
 .index('by_chat', ['chatId'])
 .index('by_session', ['sessionId'])
@@ -274,16 +285,30 @@ exercises: {
 exerciseLibrary: {
   canonicalName // string
   aliases       // string[]
-  searchBlob    // canonicalName + aliases, kept in sync on every write
+  searchBlob    // canonicalName + aliases + description when present, kept in sync on every write
   userId        // optional FK -> profiles; undefined means global wger entry
-  category, equipment, muscleGroup, allMuscles, description // optional metadata
+  category, equipment, muscleGroup, description // optional string metadata
+  allMuscles    // optional string[] metadata
   source        // "wger" | "custom"
   wgerId        // optional number
   createdAt     // number
 }
 .index('by_wgerId', ['wgerId']) // idempotent global wger seed/upsert lookup
 .index('by_user', ['userId'])
-.searchIndex('search_name', { searchField: 'searchBlob', filterFields: ['userId', 'equipment', 'muscleGroup'] })
+
+exerciseLibraryEmbeddings: {
+  exerciseId    // FK -> exerciseLibrary
+  userId        // optional FK -> profiles; mirrors the source library row
+  equipment, muscleGroup // optional copied filter fields
+  embedding     // 768-dimension gemini-embedding-001 document vector
+  createdAt     // number
+}
+.index('by_exercise', ['exerciseId'])
+.vectorIndex('by_embedding', { vectorField: 'embedding', dimensions: 768,
+  filterFields: ['userId', 'equipment', 'muscleGroup'] })
+
+// Embeddings stay out of the main library row so normal reads remain lean.
+// There is intentionally no full-text search index: resolution uses vectors.
 
 // Global rows are never deleted for a profile. Custom rows cascade with their
 // owning profile.
@@ -299,6 +324,18 @@ userExerciseAliases: {
   createdAt, lastUsedAt // number timestamps
 }
 .index('by_user_and_raw', ['userId', 'rawInputNormalized'])
+
+// CASCADE: deleted with its profile.
+
+userExerciseAliasEmbeddings: {
+  aliasId       // FK -> userExerciseAliases
+  userId        // FK -> profiles
+  embedding     // 768-dimension gemini-embedding-001 document vector
+  createdAt     // number
+}
+.index('by_alias', ['aliasId'])
+.vectorIndex('by_embedding', { vectorField: 'embedding', dimensions: 768,
+  filterFields: ['userId'] })
 
 // CASCADE: deleted with its profile.
 
@@ -406,6 +443,28 @@ apiUsage: {
 // the messageBlocks reversal above; token/cost records stay backend-only.
 
 
+guideInvocations: {
+  userId      // FK -> profiles
+  messageId   // FK -> messages
+  reviewed    // boolean, default false
+  createdAt   // number (timestamp)
+}
+.index('by_user', ['userId'])
+.index('by_message', ['messageId'])
+
+// Backend-only. Never sent to Gemini, following the same exception pattern as
+// apiUsage. Written once after each get_new_exercise_guidance execution — not
+// model-invoked and not part of any
+// tool's return schema.
+// Purpose: safety/tuning review log for guide invocations, not a live-state
+// tracker. It does not answer whether a naming-guide conversation is active;
+// that remains messages.usedTools per the existing lock.
+// CASCADE: cascades transitively via messages -> chats -> profiles, under both
+// chat deletion paths (sweep and force-delete), same as messageFeedback. If
+// the messages cascade note is ever made explicit per-table instead of general,
+// add guideInvocations there.
+
+
 messageFeedback: {
   messageId   // FK -> messages
   userId      // FK -> profiles
@@ -464,7 +523,7 @@ userReports: {
 | Trigger | Cascades |
 |---|---|
 | `profiles` deleted | Everything **except** `userReports` |
-| `chats` retention sweep | `messages`, `cards`, `sessionSummaries`, `messageFeedback` (transitively). **Not** `dailySummaries`. (Sweep itself is currently paused — see `chats` cascade notes above.) |
+| `chats` retention sweep | `messages`, `cards`, `sessionSummaries`, `messageFeedback`, `guideInvocations` (transitively). **Not** `dailySummaries`. (Sweep itself is currently paused — see `chats` cascade notes above.) |
 | `chats` force delete | Same as sweep, **plus** `dailySummaries` |
 | `sessions` deleted | Never happens via app logic — manual/admin only, not a designed path |
 

@@ -18,19 +18,64 @@ Per `(userId, chatId)`, before the Gemini call:
   included above, ordered by message timestamp then block `order`. Send their
   text, tool-call, and tool-result content to Gemini as the turn history.
   Preserve the trace exactly: a tool call or result remains in context even if
-  it was invalid, failed, or led to a mistaken model response. `apiUsage` is
-  never fetched for or included in Gemini context.
+  it was invalid, failed, or led to a mistaken model response. `apiUsage` and
+  `guideInvocations` are never fetched for or included in Gemini context.
 - **`sessionSummaries`** — via `by_chat_and_tier`, latest `compressedTill` per tier, used once raw messages exceed the token-size threshold.
 - **Pinned card injection**: query `cards` for this chat where `inDiscussion === true`, then inject their `rawOutput`/`parsedData`. `messages.cardContext.closed` is UI decoration only and is never used for prompt injection.
 
 ## 2. The Gemini Call
 
-Call 1 uses `tools: [log_workout, Get_data, Correct_log]` and
-`responseSchema: { reply: string }`. `log_workout` is create-only;
+Call 1 always uses `tools: [log_workout, Get_data, Correct_log,
+search_exercise_library, calculate]`. `calculate` is always available and is
+unrelated to naming guidance. Only while a naming-guide conversation is active
+for the chat does its tools array also include `get_new_exercise_guidance` and
+`create_custom_exercise`. A guide becomes active when
+`search_exercise_library` returns still-ambiguous/near-miss results and Eco
+enters a naming conversation; it clears on `resolved_existing`,
+`resolved_custom`, or the existing 10-turn force-close in §7. Reuse §7's
+trailing-marker streak as this active/inactive signal; do not introduce a
+second parallel tracker. `responseSchema: { reply: string }`.
+`log_workout` is create-only;
 `Correct_log` owns every correction. If pinned cards are active, each is
 labeled `"Card 1"`, `"Card 2"`, etc. (ephemeral, request-scoped mapping —
 never a persisted or schema field) — model only ever sees/echoes labels,
 never real `cards._id`s.
+
+Eco must call `calculate` for any numeric output a user could reasonably
+double-check later: 1RM estimates, percent-of-1RM back-calculations, plate
+math, volume/tonnage totals, pace conversions, and unit conversions. It must
+not calculate or state those numbers from its own reasoning. `expression` is a
+last resort for pure arithmetic that does not fit a named operation; it must
+never substitute for a named formula. If the applicable named operation is
+uncertain, Eco prefers that named operation over guessing with `expression`.
+
+`get_new_exercise_guidance` is disambiguation only, not a custom-exercise
+namer. Its required Zod input is `{ rawPhrase: string, candidates: Array<{
+exerciseId, canonicalName, score }> }`, where candidates are passed through
+from `search_exercise_library` and capped at five. Its return is exactly one
+of: `{ outcome: "resolved_existing", exerciseId }`, `{ outcome:
+"resolved_custom" }`, or `{ outcome: "still_ambiguous" }`. It writes no
+`exerciseLibrary` or alias row. `resolved_existing` supplies the ID for the
+next `log_workout`, whose write path creates the confirmed alias with
+`source: "confirmed"`; `resolved_custom` requires
+`create_custom_exercise` next in the same turn before `log_workout`; and
+`still_ambiguous` permits no further tool call and leaves the guide active for
+the next turn. Eco must not call `create_custom_exercise` on the
+`resolved_existing` path. During the guide, Eco walks the user through the
+near-miss candidates conversationally rather than dumping a list. The required
+backend-only `guideInvocations` review row is the sole post-execution write for
+this guidance tool.
+
+`create_custom_exercise` takes required string `name` and `description`,
+optional string metadata (`category`, `equipment`, `muscleGroup`), optional
+`allMuscles: string[]`, and optional `aliases: string[]`. It writes a personal
+`exerciseLibrary` row only (`userId` is always the calling user, never global),
+sets `source: "custom"`, builds `searchBlob` with the shared name/aliases/
+description helper, immediately writes its `RETRIEVAL_DOCUMENT` embedding, and
+returns the new `exerciseId`. Its aliases seed `exerciseLibrary.aliases` only;
+it never writes `userExerciseAliases`. Eco must receive that `exerciseId`
+before calling `log_workout` in the same turn; these tool calls remain
+sequential within the five-call cap.
 
 `Get_data` never accepts a session/database ID. It has no `collectionType`
 field: the supplied optional arguments determine what is read. Its contract is:
@@ -52,6 +97,38 @@ The tool result always has `profile`, `dailySummary`, and `exercises` keys.
 that `Get_data` flow has returned it. Any of these read requests may be
 combined in one call, but Eco must not request data speculatively.
 
+`calculate` is pure computation: no database reads or writes, no profile
+unit-preference lookup, and no external calls. Every success returns
+`{ operation, result, ...operationSpecificFields }`; invalid numeric domains
+and validation failures return `{ operation, result: null, error: { code,
+message } }` rather than throwing. Its Zod input is a discriminated union on
+`operation`:
+
+- `oneRepMax`: `{ formula: "epley" | "brzycki", weight: number, reps: int >=
+  1, weightUnit: "kg" | "lbs" }`. Epley is `weight * (1 + reps / 30)`;
+  Brzycki is `weight * (36 / (37 - reps))`. Reject Brzycki `reps >= 37`.
+- `percentOf1RM`: `{ oneRepMax: number, percent: number (0–100) }`. Return the
+  percentage rounded to the nearest `0.5`.
+- `convertUnit`: `{ value: number, from: "kg" | "lbs" | "km" | "miles",
+  to: same enum }`. Reject cross-family conversion. Use `1 kg = 2.2046226218
+  lbs` and `1 mile = 1.609344 km`.
+- `plateMath`: `{ targetWeight: number, barWeight: number, weightUnit: "kg" |
+  "lbs", availablePlates?: number[] }`. Bar weight is required, never assumed.
+  Defaults are kg `[25,20,15,10,5,2.5,1.25]` and lbs `[45,35,25,10,5,2.5]`.
+  Return greedy largest-first plates per side and the actual achievable total;
+  never silently round the target.
+- `volumeTotal`: `{ sets: Array<{ reps: number, weight: number }> }`, minimum
+  one set. Return `sum(reps * weight)` and `setCount`.
+- `paceConvert`: `{ distance: number, distanceUnit: "km" | "miles", duration:
+  number }`, where duration is seconds. Return seconds-per-unit and formatted
+  `"M:SS per km/mile"`; reject non-positive distance.
+- `expression`: `{ expression: string }`, only for pure arithmetic outside the
+  named operations—never formula recall. It permits only numbers,
+  parentheses, `+ - * / %`, and `sqrt`, `round`, `floor`, `ceil`, `min`, `max`,
+  `pow`, and `abs`; it never uses `eval()` or `Function()`.
+
+BMI, TDEE, and calorie estimation are out of V1 scope.
+
 Response either:
 - **(a)** includes a `functionCall` (args = parse data) → logging/correction turn.
 - **(b)** text only → conversational/query turn.
@@ -63,31 +140,60 @@ Create the Eco `messages` row when processing starts, then complete its
 its `messageBlocks` trace reactively while processing continues.
 
 - **No tool call** → done, return `reply`.
-- **Tool call fired** → run deterministic Zod validation (types, ranges, enum membership).
+- **Tool call fired** → run deterministic Zod validation (types, ranges, enum
+  membership, and required resolved exercise IDs).
 
-`log_workout` validation covers types, ranges, and block enums.
+`log_workout` validation covers types, ranges, block enums, and a non-empty
+`exerciseId` on every extracted exercise. A missing or empty `exerciseId` is
+the same validation failure as any malformed type, range, or enum value: it
+returns to the existing sequential tool-call/clarification flow and creates no
+card. The write branch is unreachable until this validation passes.
 `needsClarification` determines whether a valid extraction auto-confirms or
 creates a pending card. Vague exercise references are handled conversationally:
 Eco asks for a concrete exercise name and does not call `log_workout`, so there
 is no generic-phrase field or generic-phrase card path. A validation failure
-also produces a conversational clarification instead of a card. No card or
-logged exercise is written until every exercise has a canonical `exerciseId`.
+also produces a conversational clarification instead of a card. A resolved
+block carries canonical `exerciseId` values. `create_custom_exercise` is the
+deliberate exception to confirmation-only library creation and supplies its
+new personal `exerciseId` before `log_workout`.
 
 ## 4. Write Branch
 
 1. Resolve every concrete extracted exercise: aliases resolve immediately; an
-   alias miss uses the capped Call 2 naming loop (`search_exercise_library`
-   and, after explicit consent, `get_new_exercise_guidance`). Generic wording
+   alias miss uses the capped Call 1 sequential tool loop (`search_exercise_library`
+   then `get_new_exercise_guidance` and `create_custom_exercise` when needed).
+   Before logging any exercise whose canonical identity Eco cannot already
+   resolve through a known alias, it proactively calls the read-only
+   `search_exercise_library`; it does not ask permission mid-turn. This search
+   commits nothing — user consent remains at card confirmation.
+   The guidance tool needs no separate consent flag. The latter tool is the
+   sole deliberate exception to confirmation-only custom-library creation: it
+   creates and embeds a personal, description-required row before
+   `log_workout`; it never creates a global row or an alias-table row.
+   `search_exercise_library` is read-only: it uses the shared
+   confirmed-alias normalizer, then checks an exact alias, user-alias vectors,
+   and separate personal/global library vectors in that order. The one
+   `RETRIEVAL_QUERY` embedding is reused for both library searches; each vector
+   search takes five hits, personal wins an exact score tie, and 0.82 is the
+   auto-resolution threshold. Below threshold it returns up to five ranked
+   near-misses for Eco to handle conversationally. Generic wording
    never reaches this branch because Eco asks for a concrete name instead.
+   Immediately after each executed `get_new_exercise_guidance` call, write one
+   backend-only `guideInvocations`
+   row with the turn's `userId` and `messageId`, `reviewed: false`, and
+   `createdAt`. This write is not model-invoked and is not included in any tool
+   return schema.
 2. `still_ambiguous` also stays plain conversation. It writes neither a card
    nor an alias. At most one naming conversation may be active in a chat.
-3. A fully resolved `matched` or `new_custom` workout with
-   `needsClarification: true` writes one **pending** card only. With
-   `needsClarification: false`, it creates the confirmed card plus its session,
-   blocks, exercises, and aliases immediately.
-4. Confirm writes the canonical/custom exercise entry as needed, the confirmed
-   alias, then the session, blocks, and exercises for a pending card; it
-   backfills `sessionId` and flips the card to `confirmed`.
+3. Each fully resolved block writes atomically. With `needsClarification:
+   true`, it writes one **pending** card only. Otherwise it creates its
+   confirmed card plus session, block, exercises, and aliases immediately. A
+   multi-exercise message may create multiple cards while an unresolved sibling
+   writes nothing.
+4. Confirm receives only already-resolved canonical or personal-custom
+   `exerciseId` values. It never creates an `exerciseLibrary` row as a fallback;
+   it writes the confirmed alias with the session, blocks, and exercises for a
+   pending card, backfills `sessionId`, and flips the card to `confirmed`.
 5. Historical `Correct_log` always creates a pending card with
    `correctsBlockId`; its confirm replaces the target block only after explicit
    re-confirmation.
@@ -111,11 +217,22 @@ logged exercise is written until every exercise has a canonical `exerciseId`.
 ## 7. Naming-guide and trace persistence
 
 - The backend writes `exercise_naming_guide_active` to `messages.usedTools` on
-  every guide turn. A real `get_new_exercise_guidance` call is recorded by name
-  as well.
+  every guide turn. A real `get_new_exercise_guidance` call is recorded by
+  name as well.
 - Context assembly counts the trailing marker streak from already-fetched
-  messages. At 8 turns it nudges resolution; at 10 it force-closes under the
-  raw name without saving an alias.
+  messages. This streak is the sole naming-guide active/inactive signal: it
+  begins when `search_exercise_library` returns still-ambiguous/near-miss
+  results and Eco enters naming guidance, and ends on `resolved_existing`,
+  `resolved_custom`, or force-close. At 8 turns it nudges resolution; at 10 it
+  force-closes under the raw name without saving an alias. No second tracker is
+  created.
+- `guideInvocations` is a safety/tuning review log only. It is written once
+  after each executed `get_new_exercise_guidance` call, is never sent to
+  Gemini, and does not replace
+  the `messages.usedTools` trailing-marker signal for active naming guidance.
+- Eco stores the user's wording as an alias only when it is a genuine alternate
+  name for the same movement. Vague, sloppy, or non-alternate wording is not
+  stored as an alias; Eco pivots to the canonical name in its reply instead.
 - `messageBlocks` are written in order as text, tool calls, and tool results.
   They are client-visible and are also the persisted tool history for main-turn
   Gemini context. Invalid or failed tool traces are retained rather than hidden

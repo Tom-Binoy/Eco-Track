@@ -144,9 +144,20 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index('by_user', ['userId'])
-    .index('by_wgerId', ['wgerId'])
-    .searchIndex('search_name', {
-      searchField: 'searchBlob',
+    .index('by_wgerId', ['wgerId']),
+
+  exerciseLibraryEmbeddings: defineTable({
+    exerciseId: v.id('exerciseLibrary'),
+    userId: v.optional(v.id('profiles')),
+    equipment: v.optional(v.string()),
+    muscleGroup: v.optional(v.string()),
+    embedding: v.array(v.float64()),
+    createdAt: v.number(),
+  })
+    .index('by_exercise', ['exerciseId'])
+    .vectorIndex('by_embedding', {
+      vectorField: 'embedding',
+      dimensions: 768,
       filterFields: ['userId', 'equipment', 'muscleGroup'],
     }),
 
@@ -158,6 +169,19 @@ export default defineSchema({
     createdAt: v.number(),
     lastUsedAt: v.number(),
   }).index('by_user_and_raw', ['userId', 'rawInputNormalized']),
+
+  userExerciseAliasEmbeddings: defineTable({
+    aliasId: v.id('userExerciseAliases'),
+    userId: v.id('profiles'),
+    embedding: v.array(v.float64()),
+    createdAt: v.number(),
+  })
+    .index('by_alias', ['aliasId'])
+    .vectorIndex('by_embedding', {
+      vectorField: 'embedding',
+      dimensions: 768,
+      filterFields: ['userId'],
+    }),
 
   messageBlocks: defineTable({
     messageId: v.id('messages'),
@@ -210,6 +234,18 @@ export default defineSchema({
     timestamp: v.number(),
     tokensUsed: v.number(),
   }).index('by_user_time', ['userId', 'timestamp']),
+
+  // Backend-only: never sent to Gemini, following the apiUsage exception pattern.
+  // Written once after get_new_exercise_guidance executes; not model-invoked or returned by a tool.
+  // Safety/tuning review log, not live naming-guide state; messages.usedTools remains the state source.
+  guideInvocations: defineTable({
+    userId: v.id('profiles'),
+    messageId: v.id('messages'),
+    reviewed: v.boolean(), // Write false when creating the record.
+    createdAt: v.number(),
+  })
+    .index('by_user', ['userId'])
+    .index('by_message', ['messageId']),
 
   messageFeedback: defineTable({
     messageId: v.id('messages'),

@@ -210,6 +210,22 @@ defineTable({
 }).index("by_user_time", ["userId", "timestamp"])
 ```
 
+**`guideInvocations`**
+```ts
+// Backend-only safety/tuning review log. Write exactly once after each
+// get_new_exercise_guidance execution; never expose
+// it to Gemini or in a tool return schema. This is not the live naming-guide
+// state tracker.
+defineTable({
+  userId: v.id("profiles"),
+  messageId: v.id("messages"),
+  reviewed: v.boolean(), // false when inserted
+  createdAt: v.number(),
+})
+ .index("by_user", ["userId"])
+ .index("by_message", ["messageId"])
+```
+
 **`messageFeedback`**
 ```ts
 defineTable({
@@ -251,6 +267,7 @@ export type DailySummary = Doc<'dailySummaries'>
 export type WorkoutContext = Doc<'workoutContext'>
 export type SessionSummary = Doc<'sessionSummaries'>
 export type ApiUsage = Doc<'apiUsage'>
+export type GuideInvocation = Doc<'guideInvocations'>
 export type MessageFeedback = Doc<'messageFeedback'>
 export type UserReport = Doc<'userReports'>
 
@@ -263,7 +280,7 @@ export type { Id }
 ## Done Checklist
 
 - [ ] `npx convex dev` deploys schema with zero errors
-- [ ] All 13 tables are visible in the Convex dashboard
+- [ ] All 14 tables are visible in the Convex dashboard
 - [ ] All indexes are present and named correctly
 - [ ] `npx tsc --noEmit` reports zero errors
 - [ ] `types/db.ts` exists and all types resolve

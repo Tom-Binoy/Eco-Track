@@ -79,14 +79,19 @@ Full schema lives in `Final-Schema.md` in the working directory. Key facts Codex
 - `cards.state` is only `"pending" | "confirmed"` — no editing state
 - `cards.sessionId` is optional — unset on low-confidence cards until user confirms
 - `apiUsage` tracks `tokensUsed` per turn — used by paywall to gate free users
+- `guideInvocations` is a backend-only, write-once safety/tuning review log
+  for executed `get_new_exercise_guidance` calls only.
+  It is never sent to Gemini,
+  never answers whether naming guidance is active, and cascades through its
+  parent message under both chat-deletion paths.
 - Main-turn Gemini context includes persisted `messageBlocks` (text, tool calls,
   and tool results) for the raw messages in the turn context. Tool traces,
-  including invalid or failed results, stay available to Gemini; `apiUsage`
-  records never do.
+  including invalid or failed results, stay available to Gemini; `apiUsage` and
+  `guideInvocations` records never do.
 
 ### Tables at a glance
 
-`profiles` · `chats` · `messages` · `cards` · `sessions` · `blocks` · `exercises` · `dailySummaries` · `workoutContext` · `sessionSummaries` · `apiUsage` · `messageFeedback` · `userReports`
+`profiles` · `chats` · `messages` · `cards` · `sessions` · `blocks` · `exercises` · `dailySummaries` · `workoutContext` · `sessionSummaries` · `apiUsage` · `guideInvocations` · `messageFeedback` · `userReports`
 
 ---
 
@@ -95,9 +100,30 @@ Full schema lives in `Final-Schema.md` in the working directory. Key facts Codex
 Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. Key facts:
 
 1. **Context assembly** — fetch `profiles`, `workoutContext`, `chats.cachedContext`, recent `messages`, `sessionSummaries` before every Gemini call
-2. **Gemini call** — one request, `tools: [log_workout]`, `responseSchema` set
+2. **Gemini call** — Call 1 always exposes `log_workout`, `Get_data`,
+   `Correct_log`, `search_exercise_library`, and `calculate`. `calculate` is
+   pure PT-scope math: it reads no profile preferences and makes no writes;
+   Eco must use it, rather than free-text reasoning, for user-checkable numeric
+   results and must reserve `expression` for pure arithmetic outside a named
+   operation. Before logging an exercise not confidently resolved through a
+   known alias, Eco proactively performs the read-only exercise-library search;
+   this does not require mid-turn consent.
+   While the existing trailing
+   `messages.usedTools` guide-marker streak is active, it also exposes
+   `get_new_exercise_guidance` and `create_custom_exercise`; follow-up calls
+   run sequentially and share the five-follow-up cap. Guidance receives the
+   unresolved `rawPhrase` plus up to five exact `search_exercise_library`
+   candidates and returns exactly `resolved_existing` (with an `exerciseId`),
+   `resolved_custom`, or `still_ambiguous`. It never creates an exercise or
+   alias; Eco guides near-miss candidates conversationally. A resolved existing
+   result goes directly into the next `log_workout`; a resolved custom result
+   requires `create_custom_exercise` and its returned ID first, while
+   still-ambiguous stays conversational.
 3. **Response branches** — `functionCall` present → logging turn; text only → conversational turn
-4. **Zod validation** — runs after every tool call; failure = low confidence (not an error state)
+4. **Zod validation** — runs after every tool call; `log_workout` requires a
+   non-empty resolved `exerciseId` on every extracted exercise in addition to
+   its type, range, and enum checks. A failure reuses the existing
+   clarification/tool-call flow and no card is created.
 5. **High confidence write** — creates `sessions` + `blocks` + `exercises` + confirmed `cards`
 6. **Low confidence write** — creates only `cards` (pending); full write happens on user confirm
 7. **Cards behavior** — Ask Eco sets `inDiscussion: true`; the active discussion is visibly signalled above the chat input and only its explicit **Back to deck** action flips it false; correction on confirmed card requires explicit re-confirm before `exercises` are rewritten
@@ -116,9 +142,17 @@ Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. K
    corrections, and meaningful emotional or life-context disclosures, including
    work stress and mental health-adjacent topics. `Daily-Cleanup_Prompt` is the
    daily memory instruction export.
-10. **Exercise library** — global wger exercises are seeded through the internal `functions/seedWger:seed` action. The public wger API needs no key; English is language ID `2`, and reruns upsert by `wgerId`.
+10. **Exercise library** — global wger exercises are seeded through the internal `functions/seedWger:seed` action. The public wger API needs no key; English is language ID `2`, and reruns upsert by `wgerId`. Existing library rows are embedded by the manually invoked public `functions/embedExerciseLibrary:backfill` action (never a cron or app call): it paginates 10 rows at a time, skips rows already present in `exerciseLibraryEmbeddings` by `by_exercise`, embeds each row's `searchBlob`, and copies the source `userId`, `equipment`, and `muscleGroup`. It uses a 700ms baseline delay and retries 429s up to five times with `Retry-After` when supplied or exponential backoff otherwise; exhausted rows are logged and reported without aborting the run. The read-only resolver is `functions/exerciseLibrary:searchForTurn`: it normalizes through the shared `lib/exerciseNormalization:normalizeExerciseInput` helper used by confirmed-alias writes, then performs the exact-alias → user-alias vector → personal/global library vector waterfall. It creates one `RETRIEVAL_QUERY` embedding with `gemini-embedding-001` at 768 dimensions and searches five hits per vector source; personal wins exact library-score ties. A 0.82 cosine similarity is the provisional auto-resolution threshold. Below threshold, it returns at most five ranked near-miss candidates; it never persists an alias or library row. The name-plus-aliases `searchBlob` is document-embedded; full-text `search_name` is intentionally absent. `create_custom_exercise` is the deliberate exception to confirmation-only creation: it creates and immediately embeds a personal custom row with a required description; it never creates a global row or a user alias.
 
 ---
+
+> **Exercise-embedding update (2026-07-26):** `exerciseLibrary.searchBlob`
+> is the normalized concatenation of `canonicalName`, aliases, and
+> `description` when present. It is the document-embedding input for
+> `exerciseLibraryEmbeddings`; therefore, changing any of those source fields
+> requires re-embedding every affected library row. This supersedes the
+> earlier name-plus-aliases-only embedding note above. `userExerciseAliasEmbeddings`
+> remain unchanged because aliases have no description field.
 
 ## V1 Scope (locked)
 
@@ -162,7 +196,8 @@ Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. K
 - Git-style chat history
 - `aiFeedback` table (dropped entirely)
 - `blocks.types` indexing
-- Vector/semantic search
+- Vector/semantic search over messages or daily summaries (exercise-library
+  resolution is implemented in V1)
 - `retainChatHistory` toggle
 
 ---
