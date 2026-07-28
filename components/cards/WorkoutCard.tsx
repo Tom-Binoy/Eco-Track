@@ -7,12 +7,18 @@ import type { Card } from '@/types/db'
 import type { ParsedData, ParsedExercise, ParsedSet } from '@/types/cards'
 
 interface WorkoutCardProps {
-  card: Card
+  card: Card & { exerciseDisplay: ExerciseDisplay[] }
   onAskEco: (cardId: Card['_id']) => Promise<void>
+}
+
+interface ExerciseDisplay {
+  displayedName: string
+  canonicalName: string | null
 }
 
 interface ExerciseRowProps {
   exercise: ParsedExercise
+  exerciseDisplay?: ExerciseDisplay
   isEditing: boolean
   onNameChange: (name: string) => void
   onSetChange: (setIndex: number, field: keyof ParsedSet, value: string) => void
@@ -60,13 +66,20 @@ function SetRow({ set, setNumber, isEditing, onChange }: SetRowProps): ReactElem
   )
 }
 
-function ExerciseRow({ exercise, isEditing, onNameChange, onSetChange }: ExerciseRowProps): ReactElement {
+function ExerciseRow({ exercise, exerciseDisplay, isEditing, onNameChange, onSetChange }: ExerciseRowProps): ReactElement {
+  const displayedName = exerciseDisplay?.displayedName ?? exercise.name
+  const canonicalName = exerciseDisplay?.canonicalName
+  const showsCanonicalName = canonicalName !== null && canonicalName !== undefined && displayedName !== canonicalName
+
   return (
     <View style={styles.exercise}>
       {isEditing ? (
         <TextInput onChangeText={onNameChange} style={styles.nameInput} value={exercise.name} />
       ) : (
-        <Text style={styles.exerciseName}>{exercise.name}</Text>
+        <>
+          <Text style={styles.exerciseName}>{displayedName}</Text>
+          {showsCanonicalName ? <Text style={styles.canonicalName}>{canonicalName}</Text> : null}
+        </>
       )}
       {exercise.sets.map((set, setIndex) => (
         <SetRow
@@ -156,11 +169,12 @@ export function WorkoutCard({ card, onAskEco }: WorkoutCardProps): ReactElement 
 
   const isPending = card.state === 'pending'
   const firstExercise = localData.blocks[0]?.exercises[0]
+  const firstExerciseDisplayName = card.exerciseDisplay[0]?.displayedName ?? firstExercise?.name
   const setCount = localData.blocks.reduce((count, block) =>
     count + block.exercises.reduce((exerciseCount, exercise) => exerciseCount + exercise.sets.length, 0), 0)
   const summary = firstExercise === undefined
     ? 'Workout'
-    : `${firstExercise.name} · ${setCount} ${setCount === 1 ? 'set' : 'sets'}`
+    : `${firstExerciseDisplayName} · ${setCount} ${setCount === 1 ? 'set' : 'sets'}`
   return (
     <View style={styles.container}>
       <Pressable
@@ -171,7 +185,7 @@ export function WorkoutCard({ card, onAskEco }: WorkoutCardProps): ReactElement 
       >
         {isPending ? <View style={styles.notificationDot} /> : <Text style={styles.historyCheck}>✓</Text>}
         <Text style={isPending ? styles.notificationLabel : styles.historyName}>
-          {card.inDiscussion ? 'Discussing with Eco…' : isPending ? '1 exercise ready to confirm' : firstExercise?.name ?? 'Workout'}
+          {card.inDiscussion ? 'Discussing with Eco…' : isPending ? '1 exercise ready to confirm' : firstExerciseDisplayName ?? 'Workout'}
         </Text>
         {isPending ? <Text style={styles.chevron}>›</Text> : <Text style={styles.historyMeta}>{summary.split(' · ')[1] ?? ''}</Text>}
       </Pressable>
@@ -191,6 +205,7 @@ export function WorkoutCard({ card, onAskEco }: WorkoutCardProps): ReactElement 
                   <ExerciseRow
                     key={`${exercise.order}-${exerciseIndex}`}
                     exercise={exercise}
+                    exerciseDisplay={card.exerciseDisplay[localData.blocks.slice(0, blockIndex).reduce((count, previousBlock) => count + previousBlock.exercises.length, 0) + exerciseIndex]}
                     isEditing={isEditing}
                     onNameChange={(name) => updateExerciseName(blockIndex, exerciseIndex, name)}
                     onSetChange={(setIndex, field, value) => updateSet(blockIndex, exerciseIndex, setIndex, field, value)}
@@ -221,6 +236,7 @@ const styles = StyleSheet.create({
   confirmButton: { alignItems: 'center', backgroundColor: '#22c55e', borderRadius: 10, flex: 1, justifyContent: 'center', minHeight: 44, paddingHorizontal: 14 },
   confirmText: { color: '#ffffff', fontFamily: 'serif', fontSize: 14, fontWeight: '700' },
   container: { marginTop: 10, width: '100%' },
+  canonicalName: { color: '#b0aea8', fontFamily: 'serif', fontSize: 12, marginBottom: 5, marginTop: -3 },
   disabledButton: { opacity: 0.6 },
   discussion: { color: '#b0aea8', fontFamily: 'serif', fontSize: 12 },
   error: { color: '#ec9c91', fontFamily: 'serif', fontSize: 12, marginTop: 4 },

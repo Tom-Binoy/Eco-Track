@@ -12,6 +12,7 @@ const setSchema = z.object({
 const exerciseSchema = z.object({
   name: z.string().trim().min(1).max(200),
   exerciseId: z.string().min(1),
+  aliasText: z.string().trim().min(1).max(200).optional(),
   proposedName: z.string().trim().min(1).max(200).optional(),
   sets: z.array(setSchema).min(1).max(100),
   order: z.number().int().min(0),
@@ -41,9 +42,11 @@ export const createCustomExerciseSchema = z.object({
 
 export const newExerciseGuidanceInputSchema = z.object({
   rawPhrase: z.string().trim().min(1).max(200),
+  conversationDetail: z.string().trim().min(1).max(2000).optional(),
   candidates: z.array(z.object({
     exerciseId: z.string().min(1),
     canonicalName: z.string().trim().min(1).max(200),
+    description: z.string().nullable(),
     score: z.number(),
   })).max(5),
 })
@@ -52,6 +55,7 @@ export const newExerciseGuidanceOutputSchema = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('resolved_existing'), exerciseId: z.string().min(1) }),
   z.object({ outcome: z.literal('resolved_custom') }),
   z.object({ outcome: z.literal('still_ambiguous') }),
+  z.object({ outcome: z.literal('declined_unsafe') }),
 ])
 
 const finiteNumber = z.number().finite()

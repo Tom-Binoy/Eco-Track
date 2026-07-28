@@ -31,16 +31,28 @@ Replace the Phase 4 placeholder response with the full Gemini turn lifecycle. Th
 >
 > **Implementation status (2026-07-26):** The standalone, read-only resolver
 > exists as `functions/exerciseLibrary:searchForTurn`. During an active guide,
-> `get_new_exercise_guidance` receives the raw phrase and exact near-miss
-> candidates and returns only `resolved_existing`, `resolved_custom`, or
-> `still_ambiguous`; it does not create exercises or aliases. The turn action
+> `get_new_exercise_guidance` receives the raw phrase, optional concrete
+> `conversationDetail` gathered during the guide, and exact near-miss
+> candidates (including their descriptions). Its full behavioral guide is
+> injected only in that resolver/function-result exchange, rather than at the
+> start of the active-guide window or in the permanent main system prompt. It returns only
+> `resolved_existing`, `resolved_custom`, `still_ambiguous`, or
+> `declined_unsafe`; it does not create exercises or aliases. A
+> `resolved_existing` result may include optional non-empty `aliasText` only
+> for a genuine alternate name; the next `log_workout` carries it to the
+> confirmed write, which creates or updates an alias only when it is present.
+> The turn action
 > writes its one review-log row after guidance executes, and the system prompt
 > prevents vague wording from being stored as an alias. Before logging an
 > exercise not confidently resolved by a known alias, Eco proactively invokes
 > the read-only search without asking permission; consent remains at card
 > confirmation. It walks near misses conversationally, logs resolved-existing
 > IDs directly, and creates a custom exercise before logging a resolved custom
-> exercise.
+> exercise. `declined_unsafe` is a conversational close only: no card,
+> library write, or alias, but it still logs the guidance invocation. A custom
+> exercise can be created only after the prompt/conversation establishes user
+> consent to keep it custom and rules out a real exercise under another name;
+> this precondition is prompt-enforced, not backend validation.
 
 The turn lifecycle runs as a **Convex action** (not a mutation) because it calls an external API (Gemini). Actions can call mutations internally.
 

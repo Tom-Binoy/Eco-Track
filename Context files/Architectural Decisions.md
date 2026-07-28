@@ -85,7 +85,9 @@ user confirms it; only that confirm path writes the permanent workout rows.
 `exercises.exerciseId` is required, so unresolved names can never be logged.
 Post-call Zod validation also requires a non-empty resolved `exerciseId` on
 every extracted exercise before either card-write path can run; confirmation
-never creates a fallback exercise-library row.
+never creates a fallback exercise-library row. The optional per-exercise
+`aliasText` is only persisted when it is non-empty and model-provided for a
+genuine alternate name; it is never inferred from the raw exercise name.
 
 ---
 
@@ -114,6 +116,12 @@ actions/runTurn.ts [action]
       `create_custom_exercise` only while the trailing guide-marker streak is
       active; responseSchema: { reply }. Tool calls are sequential and share
       the five-follow-up cap.
+      The full naming-guide behavior is injected only when
+      `get_new_exercise_guidance` executes: it accompanies that function result
+      and the read-only resolver prompt, rather than being part of Call 1's
+      permanent system instruction for every guide-active turn. The tool input
+      carries `rawPhrase`, optional gathered `conversationDetail`, and the
+      exact near-miss candidates with descriptions.
       `Get_data` selects its read by optional arguments rather than a collection
       type: `collectionPoints` for profile fields, `dailySummaryDate`
       (`YYYY-MM-DD`) for one daily summary, and `dateRange` / `exerciseId` for
@@ -122,14 +130,19 @@ actions/runTurn.ts [action]
       user-alias vectors, then separate global and personal library vectors.
       `gemini-embedding-001` uses 768 dimensions; 0.82 is the provisional
       auto-resolution threshold. Below-threshold results remain conversational;
-      no-match resolution may call naming guidance without a consent flag.
+      returned candidates include descriptions so Eco can explain a match
+      without a second lookup. No-match resolution may call naming guidance
+      without a consent flag.
    4. Write each fully resolved block atomically. One message may therefore
       create multiple cards while an unresolved sibling remains conversational.
       Confirm is the normal path that persists custom exercise-library entries
-      and confirmed aliases. The guide-active `create_custom_exercise` tool is
+      and aliases only for non-empty per-exercise `aliasText`. The guide-active `create_custom_exercise` tool is
       the deliberate exception: it writes and embeds a personal,
       description-required library row before `log_workout`, but never writes a
-      confirmed alias. Historical corrections carry
+      confirmed alias. It is prompt-enforced that the guide has established
+      user consent to keeping a genuinely custom movement and ruled out an
+      existing exercise under another name; that precondition is not backend
+      validation. Historical corrections carry
       `correctsBlockId` and are also re-confirmed.
    5. The Eco message row is created at processing start; its final text and
       ordered messageBlocks are updated reactively as the turn proceeds.

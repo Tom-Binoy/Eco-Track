@@ -5,6 +5,7 @@ import { internal } from '../_generated/api'
 import type { Doc, Id } from '../_generated/dataModel'
 import { action, internalMutation, internalQuery, query } from '../_generated/server'
 import { beginGeminiTurn, continueGeminiTurn, getNewExerciseGuidance, type GeminiContext, type LeanContext } from '../lib/gemini'
+import { EXERCISE_NAMING_GUIDANCE } from '../lib/prompts/ecoSystem'
 import { executeCalculate } from '../lib/calculate'
 import { createCustomExerciseSchema, newExerciseGuidanceInputSchema, type ToolCallData, validateToolCall } from '../lib/validation'
 
@@ -130,14 +131,14 @@ export const processTurn = action({
         historicalExerciseDetailsFetched = historicalExerciseDetailsFetched || exerciseId !== undefined
       } else if (toolName === 'search_exercise_library') {
         const rawInput = 'rawInput' in request && typeof request.rawInput === 'string' ? request.rawInput : ''
-        const search: { autoResolved: { exerciseId: Id<'exerciseLibrary'>; canonicalName: string; score: number } | null; candidates: Array<{ _id: Id<'exerciseLibrary'>; canonicalName: string; score: number }> } | null = rawInput.length === 0 ? null : await ctx.runAction(internal.functions.exerciseLibrary.searchForTurn, { userId: context.profile._id, rawInput })
-        dataForModel = search === null ? { error: 'A concrete exercise name is required.' } : { rawInput, autoResolved: search.autoResolved, candidates: search.candidates.map((candidate: { _id: Id<'exerciseLibrary'>; canonicalName: string; score: number }) => ({ exerciseId: candidate._id, canonicalName: candidate.canonicalName, score: candidate.score })) }
+        const search: { autoResolved: { exerciseId: Id<'exerciseLibrary'>; canonicalName: string; score: number } | null; candidates: Array<{ _id: Id<'exerciseLibrary'>; canonicalName: string; description: string | null; score: number }> } | null = rawInput.length === 0 ? null : await ctx.runAction(internal.functions.exerciseLibrary.searchForTurn, { userId: context.profile._id, rawInput })
+        dataForModel = search === null ? { error: 'A concrete exercise name is required.' } : { rawInput, autoResolved: search.autoResolved, candidates: search.candidates.map((candidate: { _id: Id<'exerciseLibrary'>; canonicalName: string; description: string | null; score: number }) => ({ exerciseId: candidate._id, canonicalName: candidate.canonicalName, description: candidate.description, score: candidate.score })) }
         if (search !== null && search.autoResolved === null && !usedTools.includes(guideMarker)) usedTools.push(guideMarker)
       } else if (toolName === 'get_new_exercise_guidance') {
         const parsed = newExerciseGuidanceInputSchema.safeParse(toolArgs)
-        if (!parsed.success) dataForModel = { outcome: 'still_ambiguous' }
+        if (!parsed.success) dataForModel = { outcome: 'still_ambiguous', exerciseNamingGuidance: EXERCISE_NAMING_GUIDANCE }
         else {
-          try { dataForModel = await getNewExerciseGuidance(parsed.data) } catch { dataForModel = { outcome: 'still_ambiguous' } }
+          try { dataForModel = { ...await getNewExerciseGuidance(parsed.data, context.leanContext.activeInjuries), exerciseNamingGuidance: EXERCISE_NAMING_GUIDANCE } } catch { dataForModel = { outcome: 'still_ambiguous', exerciseNamingGuidance: EXERCISE_NAMING_GUIDANCE } }
           await ctx.runMutation(internal.functions.exerciseLibrary.recordGuideInvocation, { userId: context.profile._id, messageId })
           if ('outcome' in dataForModel && dataForModel.outcome !== 'still_ambiguous') {
             const markerIndex = usedTools.lastIndexOf(guideMarker)
@@ -156,7 +157,8 @@ export const processTurn = action({
       blockOrder += 1
       await ctx.runMutation(internal.functions.messages.appendBlock, { messageId, order: blockOrder, type: 'tool_result', content: JSON.stringify(dataForModel), toolName })
       try { response = await continueGeminiTurn(geminiTurn.chat, toolName, dataForModel) } catch { await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: 'Eco could not respond right now. Please try again.', usedTools }); return { ecoText: '', error: 'Eco could not respond right now. Please try again.' } }
-      if (toolName === 'get_new_exercise_guidance' && 'outcome' in dataForModel && dataForModel.outcome === 'still_ambiguous' && response.functionCall !== null) response = { functionCall: null, text: 'Can you describe the movement a little more — especially the body position or equipment?', tokensUsed: response.tokensUsed }
+      if (toolName === 'get_new_exercise_guidance' && 'outcome' in dataForModel && dataForModel.outcome === 'still_ambiguous' && response.functionCall !== null) response = { functionCall: null, text: 'Tell me a little more about how you do it—or whether you made it up or learned it from someone—so I can place it properly.', tokensUsed: response.tokensUsed }
+      if (toolName === 'get_new_exercise_guidance' && 'outcome' in dataForModel && dataForModel.outcome === 'declined_unsafe' && response.functionCall !== null) response = { functionCall: null, text: 'I can’t help add that movement to the library because it is broadly unsafe. Let’s find a safer way to train the same area.', tokensUsed: response.tokensUsed }
       tokensUsed += response.tokensUsed
       if (response.functionCall !== null) usedTools.push(response.functionCall.name)
       blockOrder += 1

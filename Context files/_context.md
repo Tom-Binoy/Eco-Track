@@ -112,13 +112,19 @@ Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. K
    `messages.usedTools` guide-marker streak is active, it also exposes
    `get_new_exercise_guidance` and `create_custom_exercise`; follow-up calls
    run sequentially and share the five-follow-up cap. Guidance receives the
-   unresolved `rawPhrase` plus up to five exact `search_exercise_library`
-   candidates and returns exactly `resolved_existing` (with an `exerciseId`),
-   `resolved_custom`, or `still_ambiguous`. It never creates an exercise or
+   unresolved `rawPhrase`, optional concrete `conversationDetail` gathered by
+   Eco, and up to five exact `search_exercise_library` candidates (each with
+   its description). Its full behavioral guide is injected only in that
+   function-result/resolver exchange, never prepended to the active-guide
+   window or retained as a permanent main system-prompt block. It returns exactly
+   `resolved_existing` (with an `exerciseId`), `resolved_custom`,
+   `still_ambiguous`, or `declined_unsafe`. It never creates an exercise or
    alias; Eco guides near-miss candidates conversationally. A resolved existing
    result goes directly into the next `log_workout`; a resolved custom result
    requires `create_custom_exercise` and its returned ID first, while
-   still-ambiguous stays conversational.
+   still-ambiguous stays conversational. `declined_unsafe` is a pure
+   conversational close: no card, library write, or alias, while the executed
+   guidance call still receives its usual `guideInvocations` review row.
 3. **Response branches** — `functionCall` present → logging turn; text only → conversational turn
 4. **Zod validation** — runs after every tool call; `log_workout` requires a
    non-empty resolved `exerciseId` on every extracted exercise in addition to
@@ -142,7 +148,7 @@ Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. K
    corrections, and meaningful emotional or life-context disclosures, including
    work stress and mental health-adjacent topics. `Daily-Cleanup_Prompt` is the
    daily memory instruction export.
-10. **Exercise library** — global wger exercises are seeded through the internal `functions/seedWger:seed` action. The public wger API needs no key; English is language ID `2`, and reruns upsert by `wgerId`. Existing library rows are embedded by the manually invoked public `functions/embedExerciseLibrary:backfill` action (never a cron or app call): it paginates 10 rows at a time, skips rows already present in `exerciseLibraryEmbeddings` by `by_exercise`, embeds each row's `searchBlob`, and copies the source `userId`, `equipment`, and `muscleGroup`. It uses a 700ms baseline delay and retries 429s up to five times with `Retry-After` when supplied or exponential backoff otherwise; exhausted rows are logged and reported without aborting the run. The read-only resolver is `functions/exerciseLibrary:searchForTurn`: it normalizes through the shared `lib/exerciseNormalization:normalizeExerciseInput` helper used by confirmed-alias writes, then performs the exact-alias → user-alias vector → personal/global library vector waterfall. It creates one `RETRIEVAL_QUERY` embedding with `gemini-embedding-001` at 768 dimensions and searches five hits per vector source; personal wins exact library-score ties. A 0.82 cosine similarity is the provisional auto-resolution threshold. Below threshold, it returns at most five ranked near-miss candidates; it never persists an alias or library row. The name-plus-aliases `searchBlob` is document-embedded; full-text `search_name` is intentionally absent. `create_custom_exercise` is the deliberate exception to confirmation-only creation: it creates and immediately embeds a personal custom row with a required description; it never creates a global row or a user alias.
+10. **Exercise library** — global wger exercises are seeded through the internal `functions/seedWger:seed` action. The public wger API needs no key; English is language ID `2`, and reruns upsert by `wgerId`. Existing library rows are embedded by the manually invoked public `functions/embedExerciseLibrary:backfill` action (never a cron or app call): it paginates 10 rows at a time, skips rows already present in `exerciseLibraryEmbeddings` by `by_exercise`, embeds each row's `searchBlob`, and copies the source `userId`, `equipment`, and `muscleGroup`. It uses a 700ms baseline delay and retries 429s up to five times with `Retry-After` when supplied or exponential backoff otherwise; exhausted rows are logged and reported without aborting the run. The read-only resolver is `functions/exerciseLibrary:searchForTurn`: it normalizes through the shared `lib/exerciseNormalization:normalizeExerciseInput` helper used by confirmed-alias writes, then performs the exact-alias → user-alias vector → personal/global library vector waterfall. It creates one `RETRIEVAL_QUERY` embedding with `gemini-embedding-001` at 768 dimensions and searches five hits per vector source; personal wins exact library-score ties. A 0.82 cosine similarity is the provisional auto-resolution threshold. Below threshold, it returns at most five ranked near-miss candidates; it never persists an alias or library row. The guide resolver may return optional `aliasText` with `resolved_existing` only for a genuine alternate name; the following confirmed write creates or updates `userExerciseAliases` only when that value is non-empty. The name-plus-aliases `searchBlob` is document-embedded; full-text `search_name` is intentionally absent. `create_custom_exercise` is the deliberate exception to confirmation-only creation: it creates and immediately embeds a personal custom row with a required description; it never creates a global row or a user alias. Exercise display defaults to `exerciseLibrary.canonicalName`; card-query results carry both that canonical name and a displayed name, using the raw wording only when it matches that user's confirmed alias. Workout cards render `displayedName` as the primary label and, only when it differs from `canonicalName`, render the canonical name beneath it as a clearly legible secondary label. `exercises.name` remains the unchanged raw extracted string.
 
 ---
 
@@ -153,6 +159,13 @@ Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. K
 > requires re-embedding every affected library row. This supersedes the
 > earlier name-plus-aliases-only embedding note above. `userExerciseAliasEmbeddings`
 > remain unchanged because aliases have no description field.
+
+`create_custom_exercise` is prompt-enforced to run only after Eco has established
+the user consents to retaining a genuinely custom movement and ruled out a real
+exercise under another name; this precondition is intentionally not backend
+validation. No schema field is needed for safety triage: injury-specific risk
+uses the existing lean `profiles.injuries` context, and universal risk is model
+judgment.
 
 ## V1 Scope (locked)
 

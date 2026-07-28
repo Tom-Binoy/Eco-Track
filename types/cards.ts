@@ -10,6 +10,7 @@ export interface ParsedSet {
 export interface ParsedExercise {
   name: string
   exerciseId?: string
+  aliasText?: string
   proposedName?: string
   sets: ParsedSet[]
   order: number

@@ -8,6 +8,7 @@ import { normalizeExerciseInput } from '../lib/exerciseNormalization'
 import { toolCallSchema, type ToolCallData } from '../lib/validation'
 
 type CardAccess = { card: Doc<'cards'>; profile: Doc<'profiles'> } | { error: string }
+type CardExerciseDisplay = { exerciseId: string; displayedName: string; canonicalName: string | null }
 async function accessCard(ctx: QueryCtx | MutationCtx, cardId: Id<'cards'>): Promise<CardAccess> { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const card = await ctx.db.get(cardId); if (profile === null || card === null) return { error: 'Card not found' }; const chat = await ctx.db.get(card.chatId); return chat?.userId === profile._id ? { card, profile } : { error: 'Card not found' } }
 
 async function resolveExerciseId(ctx: MutationCtx, exercise: ToolCallData['blocks'][number]['exercises'][number]): Promise<Id<'exerciseLibrary'> | null> {
@@ -15,13 +16,27 @@ async function resolveExerciseId(ctx: MutationCtx, exercise: ToolCallData['block
   return entry?._id ?? null
 }
 async function writeBlockExercises(ctx: MutationCtx, blockId: Id<'blocks'>, data: ToolCallData, userId: Id<'profiles'>, weightUnit: 'kg' | 'lbs'): Promise<{ error?: string }> {
-  for (const block of data.blocks) for (const exercise of block.exercises) { const exerciseId = await resolveExerciseId(ctx, exercise); if (exerciseId === null) return { error: 'Exercise naming must be resolved before confirmation' }; await ctx.db.insert('exercises', { blockId, userId, exerciseId, name: exercise.name, weightUnit, order: exercise.order, sets: exercise.sets, createdAt: Date.now() }); const raw = normalizeExerciseInput(exercise.name); const existing = await ctx.db.query('userExerciseAliases').withIndex('by_user_and_raw', (q) => q.eq('userId', userId).eq('rawInputNormalized', raw)).unique(); const aliasId = existing === null ? await ctx.db.insert('userExerciseAliases', { userId, rawInputNormalized: raw, exerciseId, source: 'confirmed', createdAt: Date.now(), lastUsedAt: Date.now() }) : existing._id; if (existing !== null) await ctx.db.patch(existing._id, { exerciseId, source: 'confirmed', lastUsedAt: Date.now() }); await ctx.scheduler.runAfter(0, internal.functions.exerciseLibrary.embedConfirmedEntries, { exerciseIds: [exerciseId], aliasIds: [aliasId] }) }
+  for (const block of data.blocks) for (const exercise of block.exercises) { const exerciseId = await resolveExerciseId(ctx, exercise); if (exerciseId === null) return { error: 'Exercise naming must be resolved before confirmation' }; await ctx.db.insert('exercises', { blockId, userId, exerciseId, name: exercise.name, weightUnit, order: exercise.order, sets: exercise.sets, createdAt: Date.now() }); if (exercise.aliasText !== undefined && exercise.aliasText.length > 0) { const raw = normalizeExerciseInput(exercise.aliasText); const existing = await ctx.db.query('userExerciseAliases').withIndex('by_user_and_raw', (q) => q.eq('userId', userId).eq('rawInputNormalized', raw)).unique(); const aliasId = existing === null ? await ctx.db.insert('userExerciseAliases', { userId, rawInputNormalized: raw, exerciseId, source: 'confirmed', createdAt: Date.now(), lastUsedAt: Date.now() }) : existing._id; if (existing !== null) await ctx.db.patch(existing._id, { exerciseId, source: 'confirmed', lastUsedAt: Date.now() }); await ctx.scheduler.runAfter(0, internal.functions.exerciseLibrary.embedConfirmedEntries, { exerciseIds: [exerciseId], aliasIds: [aliasId] }) } }
   return {}
 }
 
-export const getByMessage = query({ args: { messageId: v.id('messages') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const cards = await ctx.db.query('cards').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).take(50); const firstCard = cards[0]; if (profile === null || firstCard === undefined) return []; const chat = await ctx.db.get(firstCard.chatId); return chat?.userId === profile._id ? cards.sort((left, right) => left.order - right.order) : [] } })
+async function addExerciseDisplay(ctx: QueryCtx, cards: Doc<'cards'>[], userId: Id<'profiles'>): Promise<Array<Doc<'cards'> & { exerciseDisplay: CardExerciseDisplay[] }>> {
+  return await Promise.all(cards.map(async (card) => {
+    const parsed = toolCallSchema.safeParse(card.parsedData)
+    if (!parsed.success) return { ...card, exerciseDisplay: [] }
+    const exerciseDisplay = await Promise.all(parsed.data.blocks.flatMap((block) => block.exercises).map(async (exercise) => {
+      const library = await ctx.db.get(exercise.exerciseId as Id<'exerciseLibrary'>)
+      const canonicalName = library?.canonicalName ?? null
+      const alias = await ctx.db.query('userExerciseAliases').withIndex('by_user_and_raw', (q) => q.eq('userId', userId).eq('rawInputNormalized', normalizeExerciseInput(exercise.name))).unique()
+      return { exerciseId: exercise.exerciseId, displayedName: alias?.exerciseId === exercise.exerciseId ? exercise.name : canonicalName ?? exercise.name, canonicalName }
+    }))
+    return { ...card, exerciseDisplay }
+  }))
+}
 
-export const getDiscussionCard = query({ args: { chatId: v.id('chats') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const chat = await ctx.db.get(args.chatId); if (profile === null || chat?.userId !== profile._id) return null; return (await ctx.db.query('cards').withIndex('by_chat', (q) => q.eq('chatId', args.chatId)).take(50)).find((card) => card.inDiscussion) ?? null } })
+export const getByMessage = query({ args: { messageId: v.id('messages') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const cards = await ctx.db.query('cards').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).take(50); const firstCard = cards[0]; if (profile === null || firstCard === undefined) return []; const chat = await ctx.db.get(firstCard.chatId); return chat?.userId === profile._id ? await addExerciseDisplay(ctx, cards.sort((left, right) => left.order - right.order), profile._id) : [] } })
+
+export const getDiscussionCard = query({ args: { chatId: v.id('chats') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const chat = await ctx.db.get(args.chatId); if (profile === null || chat?.userId !== profile._id) return null; const card = (await ctx.db.query('cards').withIndex('by_chat', (q) => q.eq('chatId', args.chatId)).take(50)).find((item) => item.inDiscussion); return card === undefined ? null : (await addExerciseDisplay(ctx, [card], profile._id))[0] ?? null } })
 
 export const confirmCard = mutation({
   args: { cardId: v.id('cards'), parsedData: v.any() },

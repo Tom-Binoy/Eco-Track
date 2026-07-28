@@ -65,7 +65,7 @@ export interface ParsedData {
 
 `components/cards/WorkoutCard.tsx`
 
-This is the main card component. It renders all blocks and exercises from `parsedData`, and handles confirm/edit/Ask Eco actions.
+This is the main card component. It renders all blocks and exercises from `parsedData`, and handles confirm/edit/Ask Eco actions. Its backing card queries also return each exercise's `displayedName` and `canonicalName`: canonical is the default; a matching confirmed user alias displays the raw alias wording. In read-only exercise rows, render `displayedName` as the primary name. When it differs from a non-null `canonicalName`, render the canonical name immediately beneath it as a small but clearly legible secondary label; render no secondary label when the names match. Reuse the card's existing typography and spacing conventions. The raw `exercises.name` stored at confirmation is never simplified in place.
 
 ```tsx
 import { View, Text, Pressable, TextInput } from "react-native"

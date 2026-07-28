@@ -26,6 +26,7 @@ import type * as functions_sessionSummaries from "../functions/sessionSummaries.
 import type * as functions_sessions from "../functions/sessions.js";
 import type * as functions_workoutContext from "../functions/workoutContext.js";
 import type * as http from "../http.js";
+import type * as lib_calculate from "../lib/calculate.js";
 import type * as lib_dailyCheck from "../lib/dailyCheck.js";
 import type * as lib_exerciseNormalization from "../lib/exerciseNormalization.js";
 import type * as lib_gemini from "../lib/gemini.js";
@@ -57,6 +58,7 @@ declare const fullApi: ApiFromModules<{
   "functions/sessions": typeof functions_sessions;
   "functions/workoutContext": typeof functions_workoutContext;
   http: typeof http;
+  "lib/calculate": typeof lib_calculate;
   "lib/dailyCheck": typeof lib_dailyCheck;
   "lib/exerciseNormalization": typeof lib_exerciseNormalization;
   "lib/gemini": typeof lib_gemini;

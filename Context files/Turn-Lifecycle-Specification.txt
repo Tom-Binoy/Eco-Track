@@ -50,23 +50,37 @@ never substitute for a named formula. If the applicable named operation is
 uncertain, Eco prefers that named operation over guessing with `expression`.
 
 `get_new_exercise_guidance` is disambiguation only, not a custom-exercise
-namer. Its required Zod input is `{ rawPhrase: string, candidates: Array<{
-exerciseId, canonicalName, score }> }`, where candidates are passed through
-from `search_exercise_library` and capped at five. Its return is exactly one
-of: `{ outcome: "resolved_existing", exerciseId }`, `{ outcome:
-"resolved_custom" }`, or `{ outcome: "still_ambiguous" }`. It writes no
-`exerciseLibrary` or alias row. `resolved_existing` supplies the ID for the
-next `log_workout`, whose write path creates the confirmed alias with
-`source: "confirmed"`; `resolved_custom` requires
+namer. Its required Zod input is `{ rawPhrase: string, conversationDetail?:
+string, candidates: Array<{
+exerciseId, canonicalName, description, score }> }`, where candidates are
+passed through from `search_exercise_library` (including a `description` field,
+which is `null` when the library row has none) and capped at five;
+`conversationDetail` carries concrete details gathered during the guide. Its return is exactly one
+of: `{ outcome: "resolved_existing", exerciseId, aliasText? }`, `{ outcome:
+"resolved_custom" }`, `{ outcome: "still_ambiguous" }`, or `{ outcome:
+"declined_unsafe" }`. It writes no
+`exerciseLibrary` or alias row. `resolved_existing` supplies the ID and,
+only when the wording is a genuine alternate name worth saving, non-empty
+`aliasText` for the next `log_workout`. Its write path creates or updates a
+confirmed alias with `source: "confirmed"` only when that `aliasText` is
+present; `resolved_custom` requires
 `create_custom_exercise` next in the same turn before `log_workout`; and
 `still_ambiguous` permits no further tool call and leaves the guide active for
-the next turn. Eco must not call `create_custom_exercise` on the
+the next turn. `declined_unsafe` permits no further tool call, writes no card,
+library row, or alias, and closes the guide conversationally. It still records
+the same post-execution `guideInvocations` row as every other outcome. Eco must not call `create_custom_exercise` on the
 `resolved_existing` path. During the guide, Eco walks the user through the
 near-miss candidates conversationally rather than dumping a list. The required
 backend-only `guideInvocations` review row is the sole post-execution write for
 this guidance tool.
 
-`create_custom_exercise` takes required string `name` and `description`,
+The guide's full behavioral content is injected at this tool invocation only:
+it is included in the read-only resolver request and in the matching function
+result returned to the main chat. It is not prepended to every guide-active
+turn or retained as a permanent segment of the main system prompt.
+
+`create_custom_exercise` takes required string `name` and `description` (both
+are required in the tool declaration's schema),
 optional string metadata (`category`, `equipment`, `muscleGroup`), optional
 `allMuscles: string[]`, and optional `aliases: string[]`. It writes a personal
 `exerciseLibrary` row only (`userId` is always the calling user, never global),
@@ -75,7 +89,10 @@ description helper, immediately writes its `RETRIEVAL_DOCUMENT` embedding, and
 returns the new `exerciseId`. Its aliases seed `exerciseLibrary.aliases` only;
 it never writes `userExerciseAliases`. Eco must receive that `exerciseId`
 before calling `log_workout` in the same turn; these tool calls remain
-sequential within the five-call cap.
+sequential within the five-call cap. Before invoking it, Eco must have
+established through the guide conversation that the user consents to keeping
+the movement custom and that it is not a real exercise under another name.
+This precondition is prompt-enforced, not backend-validated.
 
 `Get_data` never accepts a session/database ID. It has no `collectionType`
 field: the supplied optional arguments determine what is read. Its contract is:
@@ -162,6 +179,10 @@ new personal `exerciseId` before `log_workout`.
 1. Resolve every concrete extracted exercise: aliases resolve immediately; an
    alias miss uses the capped Call 1 sequential tool loop (`search_exercise_library`
    then `get_new_exercise_guidance` and `create_custom_exercise` when needed).
+   Every sequential call, including a mid-guide re-invocation of
+   `search_exercise_library`, consumes one of this loop's five calls. This cap
+   is independent of the §7 ten-turn naming-guide marker streak; neither
+   counter increments the other.
    Before logging any exercise whose canonical identity Eco cannot already
    resolve through a known alias, it proactively calls the read-only
    `search_exercise_library`; it does not ask permission mid-turn. This search
@@ -184,16 +205,23 @@ new personal `exerciseId` before `log_workout`.
    `createdAt`. This write is not model-invoked and is not included in any tool
    return schema.
 2. `still_ambiguous` also stays plain conversation. It writes neither a card
-   nor an alias. At most one naming conversation may be active in a chat.
+   nor an alias. `declined_unsafe` likewise writes neither, but closes the
+   guide rather than leaving it active. At most one naming conversation may be
+   active in a chat. Injury-specific declines use the existing lean
+   `profiles.injuries` context; universal safety declines are model judgment,
+   so this safety-tier split needs no schema field.
 3. Each fully resolved block writes atomically. With `needsClarification:
    true`, it writes one **pending** card only. Otherwise it creates its
-   confirmed card plus session, block, exercises, and aliases immediately. A
+   confirmed card plus session, block, and exercises immediately. It creates
+   or updates a user alias only for an exercise carrying non-empty `aliasText`.
+   A
    multi-exercise message may create multiple cards while an unresolved sibling
    writes nothing.
 4. Confirm receives only already-resolved canonical or personal-custom
    `exerciseId` values. It never creates an `exerciseLibrary` row as a fallback;
-   it writes the confirmed alias with the session, blocks, and exercises for a
-   pending card, backfills `sessionId`, and flips the card to `confirmed`.
+   it writes the session, blocks, and exercises for a pending card, and creates
+   or updates a confirmed alias only when that exercise carries non-empty
+   `aliasText`; it backfills `sessionId` and flips the card to `confirmed`.
 5. Historical `Correct_log` always creates a pending card with
    `correctsBlockId`; its confirm replaces the target block only after explicit
    re-confirmation.
@@ -223,7 +251,7 @@ new personal `exerciseId` before `log_workout`.
   messages. This streak is the sole naming-guide active/inactive signal: it
   begins when `search_exercise_library` returns still-ambiguous/near-miss
   results and Eco enters naming guidance, and ends on `resolved_existing`,
-  `resolved_custom`, or force-close. At 8 turns it nudges resolution; at 10 it
+  `resolved_custom`, `declined_unsafe`, or force-close. At 8 turns it nudges resolution; at 10 it
   force-closes under the raw name without saving an alias. No second tracker is
   created.
 - `guideInvocations` is a safety/tuning review log only. It is written once
@@ -233,6 +261,15 @@ new personal `exerciseId` before `log_workout`.
 - Eco stores the user's wording as an alias only when it is a genuine alternate
   name for the same movement. Vague, sloppy, or non-alternate wording is not
   stored as an alias; Eco pivots to the canonical name in its reply instead.
+- The resolver includes optional `aliasText` only on `resolved_existing` when
+  that condition holds. `log_workout` carries it per exercise to the confirmed
+  write path; it is never inferred from `exercises.name`.
+- `exercises.name` remains the raw extracted string. Card-query display data
+  returns both `displayedName` and `canonicalName`: canonical is the default,
+  while a matching user alias displays the raw stored wording. Workout-card
+  exercise rows render `displayedName` as the primary name and render the
+  canonical name as a clearly legible secondary line only when the two names
+  differ.
 - `messageBlocks` are written in order as text, tool calls, and tool results.
   They are client-visible and are also the persisted tool history for main-turn
   Gemini context. Invalid or failed tool traces are retained rather than hidden

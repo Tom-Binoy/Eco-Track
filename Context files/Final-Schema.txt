@@ -39,7 +39,9 @@ Reconciled against the Turn Lifecycle Spec (consolidated):
   added, with separate `exerciseLibraryEmbeddings` and
   `userExerciseAliasEmbeddings` tables for 768-dimension semantic resolution.
   Every logged `exercises` row now has the required `exerciseId` FK; its `name`
-  remains the original extracted string.
+  remains the original extracted string. Display responses carry both a
+  canonical name and a displayed name; the latter uses matching user-alias
+  wording while the former remains available for later UI treatment.
 - **Corrections and trace** — `cards.correctsBlockId`, `messages.usedTools`,
   and `messageBlocks` support historical corrections, guide trace/history, the
   client-visible processing trace, AND (reversed from earlier phases —
@@ -54,6 +56,17 @@ Reconciled against the Turn Lifecycle Spec (consolidated):
   `messages.usedTools` guide-marker streak is the sole active/inactive signal.
   `discussionType`, `guideActiveTurns`, and `hiddenTrace` are intentionally
   absent.
+- **Naming-guide safety outcomes** — `declined_unsafe` is an outcome contract,
+  not persisted state. It needs no schema change: injury-specific evaluation
+  uses the existing lean `profiles.injuries` context and universal safety is a
+  model judgment. It closes conversationally without a card, library row, or
+  alias; its executed guidance call still has the usual `guideInvocations` row.
+- **Naming-guide prompt injection** — the guide's behavioral content is not
+  permanent main system-prompt state. It is supplied only with an executed
+  `get_new_exercise_guidance` resolver/function-result exchange. Its tool input
+  has `rawPhrase`, optional gathered `conversationDetail`, and up to five exact
+  candidates including nullable descriptions; this remains a prompt/tool
+  contract, not persisted schema state.
 - **`messageBlocks` now read into context/compression (reversal)** —
   earlier phases treated `messageBlocks` as presentation-only, never read
   by the model. That's reversed: `messageBlocks` is now sent to Gemini as
@@ -324,6 +337,10 @@ userExerciseAliases: {
   createdAt, lastUsedAt // number timestamps
 }
 .index('by_user_and_raw', ['userId', 'rawInputNormalized'])
+
+// Created or updated at a confirmed write only when per-exercise aliasText is
+// non-empty. aliasText is resolver/model-provided for genuine alternate names;
+// it is never inferred from exercises.name.
 
 // CASCADE: deleted with its profile.
 

@@ -17,6 +17,7 @@ type ResolutionSource = 'exact_alias' | 'user_alias_vector' | 'personal_library_
 type VectorMatch = {
   exerciseId: Id<'exerciseLibrary'>
   canonicalName: string
+  description: string | null
   score: number
   source: CandidateSource
   // Kept temporarily for the existing Call 1 follow-up loop, which already
@@ -267,7 +268,7 @@ export const searchForTurn = internalAction({
         const embedding = aliasEmbeddingById.get(match._id)
         const alias = embedding === undefined ? undefined : aliasById.get(embedding.aliasId)
         const exercise = alias === undefined ? undefined : exerciseById.get(alias.exerciseId)
-        return exercise === undefined ? [] : [{ exerciseId: exercise._id, canonicalName: exercise.canonicalName, score: match._score, source: 'personal' as const, _id: exercise._id }]
+        return exercise === undefined ? [] : [{ exerciseId: exercise._id, canonicalName: exercise.canonicalName, description: exercise.description ?? null, score: match._score, source: 'personal' as const, _id: exercise._id }]
       })
       const bestAlias = rankCandidates(aliasCandidates)[0]
       if (bestAlias !== undefined && bestAlias.score >= autoResolveThreshold) {
@@ -292,7 +293,7 @@ export const searchForTurn = internalAction({
       const toCandidates = (matches: typeof personalMatches, source: CandidateSource): VectorMatch[] => matches.flatMap((match) => {
         const embedding = libraryEmbeddingById.get(match._id)
         const exercise = embedding === undefined ? undefined : libraryExerciseById.get(embedding.exerciseId)
-        return exercise === undefined ? [] : [{ exerciseId: exercise._id, canonicalName: exercise.canonicalName, score: match._score, source, _id: exercise._id }]
+        return exercise === undefined ? [] : [{ exerciseId: exercise._id, canonicalName: exercise.canonicalName, description: exercise.description ?? null, score: match._score, source, _id: exercise._id }]
       })
       const personalCandidates = toCandidates(personalMatches, 'personal')
       const globalCandidates = toCandidates(globalMatches, 'global')

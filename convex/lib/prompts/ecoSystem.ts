@@ -12,8 +12,6 @@ export type EcoSystemPromptContext = {
   }
   sessionSummaries: Array<Pick<Doc<'sessionSummaries'>, 'content' | 'compressedTill' | 'order' | 'tier'>>
   pinnedCards: Array<{ label: string; card: Pick<Doc<'cards'>, 'rawOutput'> }>
-  guideActive: boolean
-  guideTurns: number
 }
 
 // Replace the contents of this constant with Eco's final, permanent system prompt.
@@ -47,7 +45,7 @@ Each is covered in full below — this is just the map.
 
 LOGGING
 - When the user provides new workout information, call \`log_workout\`.
-- Before logging any exercise whose canonical identity is not already certain through a known alias, proactively call \`search_exercise_library\`. Act; do not ask the user for permission mid-turn. It is read-only, always available, and does not commit anything — consent happens at card confirmation. Use the returned \`autoResolved.exerciseId\` when provided. If there are only below-threshold candidates, begin a naming conversation. While it is active, walk the user through the near-miss candidates conversationally rather than dumping a list, then call \`get_new_exercise_guidance\` with the original phrase and the exact candidates. Never silently pick a near-miss. On \`resolved_existing\`, carry that \`exerciseId\` into the next \`log_workout\` call and do not call \`create_custom_exercise\`. On \`resolved_custom\`, call \`create_custom_exercise\` first, wait for its resulting \`exerciseId\`, then call \`log_workout\` with it — never call \`log_workout\` before \`create_custom_exercise\` resolves. On \`still_ambiguous\`, make no tool call and keep the guide conversation open for the next turn.
+- Before logging any exercise whose canonical identity is not already certain through a known alias, proactively call \`search_exercise_library\`. Act; do not ask the user for permission mid-turn. It is read-only, always available, and does not commit anything — consent happens at card confirmation. Use the returned \`autoResolved.exerciseId\` when provided. For below-threshold candidates, use the naming guidance returned by \`get_new_exercise_guidance\` when that tool is invoked; never silently pick a near-miss.
 - Only store the user's own wording as an alias when it is a genuine alternate name for the same movement. If their phrase is vague, sloppy, or not a real alternate name, pivot to the canonical name in your reply instead of echoing the raw phrase as a stored alias.
 - Every logged exercise must carry the resolved \`exerciseId\` returned by search or \`create_custom_exercise\`.
 - Preserve the user's meaning exactly. Never invent exercises, sets, reps, weight, duration, distance, or block structure.
@@ -93,7 +91,7 @@ TEAM FEEDBACK (pending tool/schema design)
 
 RESPONSE FORMAT
 - Always return JSON matching the schema: \`{ reply: string }\`.
-- Keep \`reply\` natural, specific, and brief.
+- Keep \`reply\` natural and specific. It must be 2 to 3 short sentences.
 `.trim()
 
 export const Tier1Compression_Prompt = `You're compressing part of an ongoing conversation between Eco, an AI training partner, and a user — not summarizing for a reader, writing notes Eco itself will read next time to pick up exactly where things left off.
@@ -156,18 +154,54 @@ Note: workout context's "considerations" field covers physical training constrai
 
 export { Daily_Cleanup_Prompt as 'Daily-Cleanup_Prompt' }
 
+export const EXERCISE_NAMING_GUIDANCE = `
+---
+This is the **Guide doc** to help you identify an exercise you don't recognize. You have up to five near-miss candidates from the library (if any), the user's phrasing, and their profile/injury context to use for this.
+
+Step 1 — Provenance (skip if already clear from conversation history): ask where this came from — did they find/read about it somewhere, did someone show them, or is it their own? This determines the branch below. Ask this like a training partner curious about a new move, not a form field.
+
+Branch: Alias (found/existing source)
+Try to identify the real exercise using the candidates plus any description the user gives. If the match is close but not exact, explain gently rather than override — "sounds like what's usually called X, that sound right, or is yours a bit different?" Once resolved, always explain what the exercise is (what it works, roughly how it's done) rather than just naming it — never leave the user to go look it up themselves.
+
+Branch: Custom (self-made or informally taught)
+Ask how it's performed. Adapt how you ask to the user — some respond well to "walk me through it step by step," others to comparisons against known movements, others to quick either/or questions. Assume the description given answers everything by default, but don't hesitate to ask one follow-up if something relevant seems missing — most people forget to mention a detail, not because they're withholding it.
+
+If direct questioning isn't landing, fall back to inferring from conversation history — but expect this to rarely have the answer, since a first-time novel exercise usually hasn't come up before.
+
+Retry-and-reclassify (if the first ID attempt doesn't land): re-search the library using the new description before asking again — richer detail can surface a real match that the original phrase missed. If that still fails, ask once more, directly: is this something you made up yourself, or did someone else teach it to you? Use the answer to keep checking whether this is actually a real exercise that got misheard, mistaught, or performed with bad form — that's the common case. A genuinely novel exercise is rare. Don't loop this more than once or twice — if it's still unclear after a couple of real attempts, treat it as custom (with consent) rather than keep pushing.
+
+Creating a custom exercise — only do this when all three hold: the user actually wants to keep it as their own (even if it originated with someone else), it passes the safety check below, and you've ruled out that it's actually a real, known exercise done under a different name or slightly wrong form.
+
+Safety assessment (before finalizing any custom exercise): check two things — is the movement broadly safe for anyone to perform, and does it plausibly work the muscle group being claimed. Separately, check the user's own injury history for personal risk.
+
+If it's risky for this user specifically (their injury history) but not inherently unsafe: warn like a training partner would, and ask if they want to proceed anyway. If yes, continue.
+If it's unsafe for anyone, regardless of injuries: don't create it. Say so plainly and kindly, and suggest a safer alternative if one's obvious. This is the one case where you don't defer to what the user wants — you're about to write into the shared library, not just their own log.
+
+Alias vs. canonical: if the user's phrasing is a genuine alternate name for a matched real exercise, offer to save it as their alias. If it's just loose/descriptive rather than a real alternate name, steer them toward the canonical name instead.
+
+Ending the conversation: resolve to resolved_existing on a confident match; resolved_custom once it clears all three custom-creation conditions above; declined_unsafe if it fails the universal safety check; or still_ambiguous if genuinely unresolved after real attempts — never as a first resort. The longer this runs, shift your own tone from asking toward proposing a default, without ever mentioning turn counts or limits to the user.
+---
+`.trim()
+
 export const EXERCISE_NAME_RESOLUTION_PROMPT = `
-You are resolving one exercise phrase during Eco's naming-guide conversation.
+You are the read-only classifier called within Eco's exercise naming guide. Apply the naming guidance below to the supplied evidence, but return only the JSON outcome.
+
+<exercise_naming_guidance>
+${EXERCISE_NAMING_GUIDANCE}
+</exercise_naming_guidance>
 
 Raw user wording: {{rawPhrase}}
+Movement detail gathered during conversation: {{conversationDetail}}
 Near-miss candidates already returned by the exercise search: {{candidates}}
+Active injuries already in the lean turn context: {{activeInjuries}}
 
 Return exactly one JSON outcome:
-- {"outcome":"resolved_existing","exerciseId":"..."} only when the raw wording genuinely identifies one of the supplied candidates. The exerciseId must be one of those candidates.
-- {"outcome":"resolved_custom"} only when the wording clearly names a genuinely new, concrete movement rather than an existing movement under different words.
-- {"outcome":"still_ambiguous"} whenever the wording remains vague, sloppy, or could reasonably mean more than one movement.
+- {"outcome":"resolved_existing","exerciseId":"...","aliasText":"..."} only when the wording and available detail identify one supplied candidate. The exerciseId must be one of those candidates. Include non-empty aliasText only when the raw user wording is a genuine alternate name worth saving; otherwise omit it.
+- {"outcome":"resolved_custom"} only when the evidence establishes a genuinely new, concrete, safe movement and the custom-creation gate is satisfied.
+- {"outcome":"still_ambiguous"} when more conversation, a re-search with new detail, or the origin check is still needed.
+- {"outcome":"declined_unsafe"} only for a universally unsafe movement, not a personal-injury warning where the user may choose to proceed.
 
-This is disambiguation, not custom-exercise naming. Do not create an exercise, invent a canonical name, return a proposed name, or return an alias.
+Do not create an exercise, invent a canonical name, or return a proposed name. Do not return aliasText unless it is a genuine alternate name worth saving.
 `.trim()
 
 function formatTrainingSummary(context: WorkoutContextContent): string {
@@ -206,11 +240,6 @@ export function buildEcoSystemPrompt(context: EcoSystemPromptContext): string {
     sections.push(`<active_cards>\n${context.pinnedCards.map(({ label, card }) => `${label}: ${card.rawOutput}`).join('\n')}\n</active_cards>`)
   }
 
-  if (context.guideActive) {
-    const deadline = context.guideTurns >= 8 ? ' Reach a concrete decision this turn or next.' : ''
-    sections.push(`<exercise_naming_guidance>\nExercise naming guidance is active (${context.guideTurns}/10 turns). Ask for one concrete exercise name and do not begin another naming guide.${deadline}\n</exercise_naming_guidance>`)
-  }
-
   return sections.join('\n\n')
 }
 
@@ -223,9 +252,12 @@ export function buildSessionSummaryCompressionPrompt(summaries: string): string 
 }
 
 export function buildExerciseNameResolutionPrompt(
-  input: { rawPhrase: string; candidates: Array<{ exerciseId: string; canonicalName: string; score: number }> },
+  input: { rawPhrase: string; conversationDetail?: string; candidates: Array<{ exerciseId: string; canonicalName: string; description: string | null; score: number }> },
+  activeInjuries: Array<{ description: string; status: string; notedAt: number }>,
 ): string {
   return EXERCISE_NAME_RESOLUTION_PROMPT
     .replace('{{rawPhrase}}', JSON.stringify(input.rawPhrase))
+    .replace('{{conversationDetail}}', JSON.stringify(input.conversationDetail ?? 'none supplied'))
     .replace('{{candidates}}', JSON.stringify(input.candidates))
+    .replace('{{activeInjuries}}', JSON.stringify(activeInjuries.map((injury) => injury.description)))
 }
