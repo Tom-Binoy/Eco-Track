@@ -63,9 +63,9 @@ onboarding's queue, which stays strictly linear).
 
 ---
 
-## 4. Two schema gaps flagged during this review (unresolved, need action independent of onboarding)
+## 4. Schema follow-up (resolved)
 
-1. **`profiles.timezone` missing from the Phase 7 schema doc.** Required by the Turn Lifecycle Spec's §1 context assembly and the §7 daily-check cron (buckets users by timezone for local-midnight processing). Needs to be added to the schema as a required field — this is a schema fix, not an onboarding design choice, and should happen before/alongside onboarding implementation.
+1. **`profiles.timezone` is included in the Phase 7 schema** as a required IANA string. It is captured through device auto-detect in task 2 and used for local-midnight daily-check bucketing.
 2. **`profiles.trainingAvailability` is schema-required but never read** anywhere in the Turn Lifecycle Spec's §1 fetch list. Decision: out of scope for onboarding entirely — seed with a placeholder, editable via settings later, never asked about in chat.
 
 ---

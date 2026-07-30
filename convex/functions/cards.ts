@@ -15,9 +15,77 @@ async function resolveExerciseId(ctx: MutationCtx, exercise: ToolCallData['block
   const entry = await ctx.db.get(exercise.exerciseId as Id<'exerciseLibrary'>)
   return entry?._id ?? null
 }
-async function writeBlockExercises(ctx: MutationCtx, blockId: Id<'blocks'>, data: ToolCallData, userId: Id<'profiles'>, weightUnit: 'kg' | 'lbs'): Promise<{ error?: string }> {
-  for (const block of data.blocks) for (const exercise of block.exercises) { const exerciseId = await resolveExerciseId(ctx, exercise); if (exerciseId === null) return { error: 'Exercise naming must be resolved before confirmation' }; await ctx.db.insert('exercises', { blockId, userId, exerciseId, name: exercise.name, weightUnit, order: exercise.order, sets: exercise.sets, createdAt: Date.now() }); if (exercise.aliasText !== undefined && exercise.aliasText.length > 0) { const raw = normalizeExerciseInput(exercise.aliasText); const existing = await ctx.db.query('userExerciseAliases').withIndex('by_user_and_raw', (q) => q.eq('userId', userId).eq('rawInputNormalized', raw)).unique(); const aliasId = existing === null ? await ctx.db.insert('userExerciseAliases', { userId, rawInputNormalized: raw, exerciseId, source: 'confirmed', createdAt: Date.now(), lastUsedAt: Date.now() }) : existing._id; if (existing !== null) await ctx.db.patch(existing._id, { exerciseId, source: 'confirmed', lastUsedAt: Date.now() }); await ctx.scheduler.runAfter(0, internal.functions.exerciseLibrary.embedConfirmedEntries, { exerciseIds: [exerciseId], aliasIds: [aliasId] }) } }
-  return {}
+type ExerciseWriteReceipt = {
+  error?: string
+  exerciseRowIds: Id<'exercises'>[]
+  aliasIds: Id<'userExerciseAliases'>[]
+}
+
+async function writeBlockExercises(
+  ctx: MutationCtx,
+  blockId: Id<'blocks'>,
+  data: ToolCallData,
+  userId: Id<'profiles'>,
+  weightUnit: 'kg' | 'lbs',
+): Promise<ExerciseWriteReceipt> {
+  const exerciseRowIds: Id<'exercises'>[] = []
+  const aliasIds: Id<'userExerciseAliases'>[] = []
+
+  for (const block of data.blocks) {
+    for (const exercise of block.exercises) {
+      const exerciseId = await resolveExerciseId(ctx, exercise)
+      if (exerciseId === null) {
+        return {
+          error: 'Exercise naming must be resolved before confirmation',
+          exerciseRowIds,
+          aliasIds,
+        }
+      }
+      exerciseRowIds.push(await ctx.db.insert('exercises', {
+        blockId,
+        userId,
+        exerciseId,
+        name: exercise.name,
+        weightUnit,
+        order: exercise.order,
+        sets: exercise.sets,
+        createdAt: Date.now(),
+      }))
+      if (exercise.aliasText !== undefined && exercise.aliasText.length > 0) {
+        const raw = normalizeExerciseInput(exercise.aliasText)
+        const existing = await ctx.db
+          .query('userExerciseAliases')
+          .withIndex('by_user_and_raw', (q) =>
+            q.eq('userId', userId).eq('rawInputNormalized', raw),
+          )
+          .unique()
+        const aliasId = existing === null
+          ? await ctx.db.insert('userExerciseAliases', {
+              userId,
+              rawInputNormalized: raw,
+              exerciseId,
+              source: 'confirmed',
+              createdAt: Date.now(),
+              lastUsedAt: Date.now(),
+            })
+          : existing._id
+        if (existing !== null) {
+          await ctx.db.patch(existing._id, {
+            exerciseId,
+            source: 'confirmed',
+            lastUsedAt: Date.now(),
+          })
+        }
+        aliasIds.push(aliasId)
+        await ctx.scheduler.runAfter(
+          0,
+          internal.functions.exerciseLibrary.embedConfirmedEntries,
+          { exerciseIds: [exerciseId], aliasIds: [aliasId] },
+        )
+      }
+    }
+  }
+  return { exerciseRowIds, aliasIds }
 }
 
 async function addExerciseDisplay(ctx: QueryCtx, cards: Doc<'cards'>[], userId: Id<'profiles'>): Promise<Array<Doc<'cards'> & { exerciseDisplay: CardExerciseDisplay[] }>> {
@@ -76,13 +144,26 @@ export const writeHighConfidenceCard = internalMutation({
     if (profile === null || chat === null || chat.userId !== profile._id) return { error: 'Chat not found' }
     const session = await ctx.db.query('sessions').withIndex('by_user_date', (q) => q.eq('userId', profile._id).eq('date', chat.date)).unique()
     const sessionId = session?._id ?? await ctx.db.insert('sessions', { userId: profile._id, date: chat.date, createdAt: Date.now() })
+    const blockIds: Id<'blocks'>[] = []
+    const exerciseRowIds: Id<'exercises'>[] = []
+    const aliasIds: Id<'userExerciseAliases'>[] = []
     for (const block of validation.data.blocks) {
       const blockId = await ctx.db.insert('blocks', { sessionId, userId: profile._id, types: [block.type], intervalSeconds: block.intervalSeconds, order: block.order, createdAt: Date.now() })
+      blockIds.push(blockId)
       const write = await writeBlockExercises(ctx, blockId, { ...validation.data, blocks: [block] }, profile._id, profile.weightUnit)
       if (write.error !== undefined) return write
+      exerciseRowIds.push(...write.exerciseRowIds)
+      aliasIds.push(...write.aliasIds)
     }
     const cardId = await ctx.db.insert('cards', { chatId: args.chatId, messageId: args.messageId, sessionId, rawOutput: args.rawOutput, parsedData: validation.data, state: 'confirmed', order: args.order ?? 0, inDiscussion: false, createdAt: Date.now() })
-    return { cardId, sessionId }
+    return {
+      cardId,
+      sessionId,
+      sessionCreated: session === null,
+      blockIds,
+      exerciseRowIds,
+      aliasIds,
+    }
   },
 })
 

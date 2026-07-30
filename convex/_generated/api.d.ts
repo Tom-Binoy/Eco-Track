@@ -10,6 +10,11 @@
 
 import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
+import type * as debug_config from "../debug/config.js";
+import type * as debug_events from "../debug/events.js";
+import type * as debug_sanitise from "../debug/sanitise.js";
+import type * as debug_trace from "../debug/trace.js";
+import type * as debug_warnings from "../debug/warnings.js";
 import type * as functions_apiUsage from "../functions/apiUsage.js";
 import type * as functions_blocks from "../functions/blocks.js";
 import type * as functions_cards from "../functions/cards.js";
@@ -42,6 +47,11 @@ import type {
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   crons: typeof crons;
+  "debug/config": typeof debug_config;
+  "debug/events": typeof debug_events;
+  "debug/sanitise": typeof debug_sanitise;
+  "debug/trace": typeof debug_trace;
+  "debug/warnings": typeof debug_warnings;
   "functions/apiUsage": typeof functions_apiUsage;
   "functions/blocks": typeof functions_blocks;
   "functions/cards": typeof functions_cards;

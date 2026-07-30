@@ -24,11 +24,11 @@ Sets up the Expo app, connects Convex, creates the full folder structure, config
 ---
 
 ## Phase 2 — Schema
-**What it is:** Deploy the database. All 13 tables, all indexes, all fields — exactly right from day one.
+**What it is:** Deploy the database. All 19 tables, all indexes, all fields — exactly right from day one.
 
-This is the most important phase for long-term consistency. Getting the schema wrong here means painful migrations later. Codex works directly from `Final-Schema.md` and translates it into Convex syntax. Also generates TypeScript types for every table.
+This is the most important phase for long-term consistency. Getting the schema wrong here means painful migrations later. Codex works directly from `Final-Schema.txt` and translates it into Convex syntax. Also generates TypeScript types for every table.
 
-**You know it's done when:** All 13 tables are visible in the Convex dashboard with the correct indexes.
+**You know it's done when:** All 19 tables are visible in the Convex dashboard with the correct indexes.
 
 **Time estimate:** 2–4 hours.
 
@@ -145,8 +145,8 @@ Submit to **TestFlight** (iOS) and **Google Play internal testing** (Android). S
 | File | Purpose |
 |---|---|
 | `_context.md` | Master context — loaded alongside every phase doc |
-| `Final-Schema.md` | Full Convex schema — source of truth for all tables |
-| `Turn-Lifecycle-Specification.md` | Turn-by-turn AI behavior — referenced by Phases 5, 6, 7 |
+| `Final-Schema.txt` | Full Convex schema — source of truth for all tables |
+| `Turn-Lifecycle-Specification.txt` | Turn-by-turn AI behavior — referenced by Phases 5, 6, 7 |
 | `phase-01-scaffolding.md` | Phase 1 detail |
 | `phase-02-schema.md` | Phase 2 detail |
 | `phase-03-auth.md` | Phase 3 detail |

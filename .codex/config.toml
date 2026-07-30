@@ -1,0 +1,7 @@
+[mcp_servers.codebase-memory-mcp]
+command = "/Users/kichu/Disk/Tom/Eco Track Project files/Eco Track App/.codex/codebase-memory-mcp/v0.9.0/codebase-memory-mcp"
+args = []
+startup_timeout_sec = 120
+
+[mcp_servers.codebase-memory-mcp.env]
+CBM_CACHE_DIR = "/Users/kichu/Disk/Tom/Eco Track Project files/Eco Track App/.codex/codebase-memory-mcp/cache"

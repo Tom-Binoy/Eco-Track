@@ -16,8 +16,10 @@ Replace the Phase 4 placeholder response with the full Gemini turn lifecycle. Th
 > `Correct_log`, `search_exercise_library`, and `calculate` always. `calculate`
 > is unrelated to exercise resolution and is never guide-marker-gated. The existing guide-marker
 > streak conditionally adds `get_new_exercise_guidance` and
-> `create_custom_exercise`; tool follow-ups are sequential and share the
-> five-follow-up cap. Exercise resolution uses the documented alias/vector
+> `create_custom_exercise`; Gemini may request multiple tools in one response.
+> Independent read-only work runs together, dependent work remains ordered, and
+> the five-follow-up cap counts follow-up model requests rather than individual
+> tools. Exercise resolution uses the documented alias/vector
 > waterfall before a block is written.
 >
 > **Calculation-tool update (locked):** `calculate` is pure deterministic
@@ -53,6 +55,31 @@ Replace the Phase 4 placeholder response with the full Gemini turn lifecycle. Th
 > exercise can be created only after the prompt/conversation establishes user
 > consent to keep it custom and rules out a real exercise under another name;
 > this precondition is prompt-enforced, not backend validation.
+
+> **Runtime and recovery status (2026-07-30):** The main-turn and exercise-name
+> guidance calls use `gemini-3.1-flash-lite` with the server-only
+> `GEMINI_API_KEY`. If Gemini startup or a tool continuation fails after a
+> message row exists, the action safely completes that row with the generic
+> unavailable message while the precise non-secret cause is written to Convex
+> action logs. A retry passes the failed message ID rather than new text: the
+> backend verifies ownership, clears any partial `messageBlocks`, excludes that
+> row from its regenerated context, and reuses its stored user text. It does
+> not insert a second `messages` row. The development-facing **Show activity**
+> UI renders only persisted Gemini tool calls/results (never text blocks or
+> internal context assembly) and suppresses entries already shown in the
+> immediately preceding Eco response. Full ordered `messageBlocks` remain
+> persisted and are still supplied to Gemini and compression as required.
+
+> **Batched turn-loop update (2026-07-30):** The installed Gemini SDK exposes
+> every request through `response.functionCalls()` and accepts an array of
+> `functionResponse` parts in the next `sendMessage`. `processTurn` persists
+> each request and its result in order. It executes contiguous independent
+> read-only work together, keeps writes and dependency-sensitive work ordered,
+> and sends all batch results back before Gemini chooses another batch or its
+> one final natural reply. `log_workout` and `Correct_log` are no longer terminal
+> branches. Invalid or inefficient requests receive specific tool-result errors
+> for Gemini to recover from. The five-follow-up safety limit counts follow-up
+> model requests, so a batch does not consume one slot per tool.
 
 The turn lifecycle runs as a **Convex action** (not a mutation) because it calls an external API (Gemini). Actions can call mutations internally.
 
@@ -113,7 +140,7 @@ export const processTurn = action({
     const geminiResponse = await callGemini(context, userText)
 
     // Step 3: Determine branch
-    const hasFunctionCall = geminiResponse.functionCall !== null
+    const hasFunctionCalls = geminiResponse.functionCalls.length > 0
 
     // Write the message row (always, regardless of branch)
     const messageId = await ctx.runMutation(api.functions.messages.writeMessage, {
@@ -123,14 +150,16 @@ export const processTurn = action({
       // sessionId set later if high confidence
     })
 
-    if (!hasFunctionCall) {
+    if (!hasFunctionCalls) {
       // Conversational turn — done
       return { ecoText: geminiResponse.text }
     }
 
-    // Step 3: Zod validation
-    const { isValid, parsedData } = validateToolCall(geminiResponse.functionCall.args)
-    const needsClarification = geminiResponse.functionCall.args.needsClarification ?? false
+    // This archival single-write example is superseded by the batch loop above.
+    // Its first request is shown only to illustrate the validation contract.
+    const firstFunctionCall = geminiResponse.functionCalls[0]!
+    const { isValid, parsedData } = validateToolCall(firstFunctionCall.args)
+    const needsClarification = firstFunctionCall.args.needsClarification ?? false
 
     // Effective confidence: pass + !needsClarification = high; everything else = low
     const isHighConfidence = isValid && !needsClarification
@@ -148,7 +177,7 @@ export const processTurn = action({
     } else {
       const { cardId } = await ctx.runMutation(
         api.functions.messages.writeLowConfidenceTurn,
-        { chatId, messageId, parsedData, rawOutput: JSON.stringify(geminiResponse.functionCall.args) }
+        { chatId, messageId, parsedData, rawOutput: JSON.stringify(firstFunctionCall.args) }
       )
       return { ecoText: geminiResponse.text, cardId }
     }
@@ -297,7 +326,7 @@ const LOG_WORKOUT_TOOL = {
 
 export async function callGemini(context, userText: string) {
   const model = genAI.getGenerativeModel({
-    model: "gemini-1.5-flash",
+    model: "gemini-3.1-flash-lite",
     tools: [{ functionDeclarations: [LOG_WORKOUT_TOOL] }],
     toolConfig: { functionCallingMode: FunctionCallingMode.AUTO },
   })
@@ -313,10 +342,10 @@ export async function callGemini(context, userText: string) {
   const result = await chat.sendMessage(userText)
   const response = result.response
 
-  const functionCall = response.functionCalls()?.[0] ?? null
+  const functionCalls = response.functionCalls() ?? []
   const text = response.text()
 
-  return { functionCall, text }
+  return { functionCalls, text }
 }
 
 function buildSystemPrompt(context) {

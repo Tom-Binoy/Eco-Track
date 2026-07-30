@@ -1,6 +1,6 @@
 import type { Id } from '@/convex/_generated/dataModel'
 
-export type MessageRole = 'user' | 'eco'
+export type MessageRole = 'user' | 'eco' | 'error'
 
 export interface ChatMessage {
   id: string

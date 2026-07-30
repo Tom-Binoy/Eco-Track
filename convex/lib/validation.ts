@@ -110,7 +110,11 @@ export type CalculateInput = z.infer<typeof calculateInputSchema>
 
 export type ToolCallValidation =
   | { isValid: true; parsedData: ToolCallData }
-  | { isValid: false; parsedData: Record<string, unknown> }
+  | {
+      isValid: false
+      parsedData: Record<string, unknown>
+      issues: Array<{ code: string; message: string; path: string }>
+    }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -123,5 +127,13 @@ export function validateToolCall(args: unknown): ToolCallValidation {
     return { isValid: true, parsedData: result.data }
   }
 
-  return { isValid: false, parsedData: isRecord(args) ? args : {} }
+  return {
+    isValid: false,
+    parsedData: isRecord(args) ? args : {},
+    issues: result.error.issues.map((issue) => ({
+      code: issue.code,
+      message: issue.message,
+      path: issue.path.join('.'),
+    })),
+  }
 }

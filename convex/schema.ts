@@ -2,8 +2,11 @@ import { defineSchema, defineTable } from 'convex/server'
 import { authTables } from '@convex-dev/auth/server'
 import { v } from 'convex/values'
 
+import { debugTables } from './debug/schema'
+
 export default defineSchema({
   ...authTables,
+  ...debugTables,
   profiles: defineTable({
     userId: v.id('users'),
     name: v.string(),

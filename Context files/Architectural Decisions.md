@@ -114,8 +114,11 @@ actions/runTurn.ts [action]
    2. Call 1 — tools: [log_workout, Get_data, Correct_log,
       search_exercise_library, calculate], plus `get_new_exercise_guidance` and
       `create_custom_exercise` only while the trailing guide-marker streak is
-      active; responseSchema: { reply }. Tool calls are sequential and share
-      the five-follow-up cap.
+      active; responseSchema: { reply }. Gemini may return multiple tool
+      requests in one response. Independent read-only requests execute
+      together; writes and dependency-sensitive requests retain returned order.
+      Their results are sent together in the next model request. The
+      five-follow-up cap counts follow-up model requests, not individual tools.
       The full naming-guide behavior is injected only when
       `get_new_exercise_guidance` executes: it accompanies that function result
       and the read-only resolver prompt, rather than being part of Call 1's
@@ -221,8 +224,8 @@ This section is the Turn Lifecycle Spec, wired into files rather than re-derived
 
 - **`functions/messages.processTurn`** implements the main turn: lean context
   assembly, Call 1 with five always-available tools and the two guide-active
-  tools (including sequential exercise search, naming guidance, and custom
-  creation), block-level identity resolution before card creation,
+  tools, batched independent read-only work, ordered dependent exercise search,
+  naming guidance, and custom creation, block-level identity resolution before card creation,
   reactive trace writes to `messageBlocks`,
   and reinjection of those ordered blocks on later main turns. Gemini runs only
   in this Convex action layer. `apiUsage` and `guideInvocations` remain excluded

@@ -41,6 +41,12 @@ const sendMessage = useCallback(async (text: string) => {
 
 Show the error as a subtle inline message below the last user bubble, not a modal. Include a "Retry" tap target.
 
+> **Implemented chat recovery (2026-07-30):** Gemini failures render as plain,
+> neutral, monospaced console text rather than an Eco bubble, red alert, or
+> modal. The centered retry button uses the app's muted green and a 44px touch
+> target. It regenerates the failed turn in place; it never duplicates the
+> user message or creates an additional `messages` row.
+
 #### Network offline
 Detect network state with `@react-native-community/netinfo`. If offline when user tries to send:
 ```

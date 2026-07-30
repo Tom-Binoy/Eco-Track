@@ -7,7 +7,7 @@ import { Slot, useRouter, useSegments } from 'expo-router'
 import type { Href } from 'expo-router'
 import { useEffect } from 'react'
 import type { ReactElement } from 'react'
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
+import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native'
 
 import { api } from '@/convex/_generated/api'
 import { useAuth } from '@/hooks/useAuth'
@@ -97,7 +97,7 @@ function AppLoadingScreen(): ReactElement {
 export default function RootLayout(): ReactElement {
   return (
     <ConvexAuthProvider client={convex} storage={tokenStorage}>
-      <OAuthCallbackHandler />
+      {Platform.OS !== 'web' && <OAuthCallbackHandler />}
       <AuthGuard />
     </ConvexAuthProvider>
   )

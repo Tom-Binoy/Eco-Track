@@ -17,6 +17,12 @@ There are two distinct memory mechanisms:
 
 Read Turn Lifecycle §7 (Memory / Reflection Triggers) carefully before starting.
 
+> **Runtime model update (2026-07-30):** All daily-cleanup and
+> memory-compression generations in `convex/lib/dailyCheck.ts` now use
+> `gemini-3.1-flash-lite` through the shared model helper. This changes only
+> the provider model; the locked cleanup, compression, and write lifecycle is
+> unchanged.
+
 ---
 
 ## What to Build
@@ -102,7 +108,7 @@ const TOKEN_THRESHOLD = 6000
 
 async function summariseMessages(messages: Message[]): Promise<string> {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" })
+  const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite" })
 
   const transcript = messages.map(m =>
     `User: ${m.userText}\nEco: ${m.ecoText}`

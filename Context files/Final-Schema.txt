@@ -138,10 +138,9 @@ chats: {
                         // daily-check cron (see workoutContext / dailySummaries
                         // below). No separate index needed; read alongside the
                         // chat row itself.
-  // OPEN ITEM: whether a *new* chat opened mid-day (after workoutContext has
-  // already changed that day) builds a fresh cache at creation, or could
-  // inherit a stale cache from an earlier same-day chat — unresolved,
-  // carried in the parking lot below.
+  // One chat exists per user per local day. A newly created chat always builds
+  // its own fresh cache, so there is no same-day second-chat stale-cache case
+  // to handle (Turn Lifecycle Specification §10).
 }
 .index('by_user_date', ['userId', 'date'])
   // Compound index does double duty: (1) everyday "load this user's chat

@@ -13,10 +13,11 @@ interface MessageListProps {
   isLoading: boolean
   messages: ChatMessage[]
   onAskEco: (cardId: Id<'cards'>) => Promise<void>
+  onRetry: (messageId: Id<'messages'>) => Promise<void>
   onSelectStarter: (text: string) => void
 }
 
-export function MessageList({ isLoading, messages, onAskEco, onSelectStarter }: MessageListProps): ReactElement {
+export function MessageList({ isLoading, messages, onAskEco, onRetry, onSelectStarter }: MessageListProps): ReactElement {
   const listRef = useRef<FlatList<ChatMessage>>(null)
 
   useEffect(() => {
@@ -30,7 +31,10 @@ export function MessageList({ isLoading, messages, onAskEco, onSelectStarter }: 
       ref={listRef}
       data={messages}
       keyExtractor={(item) => item.id}
-      renderItem={({ item }) => <MessageBubble message={item} onAskEco={onAskEco} />}
+      renderItem={({ item, index }) => {
+        const previousEcoMessage = messages.slice(0, index).reverse().find((candidate) => candidate.role === 'eco')
+        return <MessageBubble isLoading={isLoading} message={item} onAskEco={onAskEco} onRetry={onRetry} previousMessageId={previousEcoMessage?.messageId} />
+      }}
       ListEmptyComponent={<EmptyChatState onSelectStarter={onSelectStarter} />}
       ListFooterComponent={isLoading ? <TypingIndicator /> : null}
       contentContainerStyle={styles.content}

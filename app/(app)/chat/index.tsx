@@ -11,7 +11,7 @@ import { api } from '@/convex/_generated/api'
 import type { Id } from '@/convex/_generated/dataModel'
 
 export default function ChatScreen(): ReactElement {
-  const { discussionCard, isLoading, messages, sendMessage } = useChat()
+  const { discussionCard, isLoading, messages, retryMessage, sendMessage } = useChat()
   const [discussionError, setDiscussionError] = useState<string | null>(null)
   const [isClosingDiscussion, setIsClosingDiscussion] = useState(false)
   const setInDiscussion = useMutation(api.functions.cards.setInDiscussion)
@@ -45,6 +45,7 @@ export default function ChatScreen(): ReactElement {
           isLoading={isLoading}
           messages={messages}
           onAskEco={handleAskEco}
+          onRetry={retryMessage}
           onSelectStarter={sendMessage}
         />
         <ChatInput

@@ -2,13 +2,17 @@ import { useAction, useMutation, useQuery } from 'convex/react'
 import { useCallback, useMemo, useState } from 'react'
 
 import { api } from '@/convex/_generated/api'
+import type { Id } from '@/convex/_generated/dataModel'
 import type { Card } from '@/types/db'
 import type { ChatMessage } from '@/types/chat'
+
+const responseUnavailableText = 'Eco could not respond right now. Please try again.'
 
 interface UseChatResult {
   discussionCard: Card | null | undefined
   isLoading: boolean
   messages: ChatMessage[]
+  retryMessage: (messageId: Id<'messages'>) => Promise<void>
   sendMessage: (text: string) => Promise<void>
 }
 
@@ -39,7 +43,7 @@ export function useChat(): UseChatResult {
       {
         id: `${message._id}-eco`,
         messageId: message._id,
-        role: 'eco' as const,
+        role: message.ecoText === responseUnavailableText ? 'error' as const : 'eco' as const,
         text: message.ecoText,
         timestamp: message.timestamp,
       },
@@ -61,5 +65,15 @@ export function useChat(): UseChatResult {
     }
   }, [getOrCreateTodayChat, processTurn])
 
-  return { discussionCard, isLoading, messages, sendMessage }
+  const retryMessage = useCallback(async (messageId: Id<'messages'>): Promise<void> => {
+    if (chat === null || chat === undefined) return
+    setIsLoading(true)
+    try {
+      await processTurn({ chatId: chat._id, retryMessageId: messageId })
+    } finally {
+      setIsLoading(false)
+    }
+  }, [chat, processTurn])
+
+  return { discussionCard, isLoading, messages, retryMessage, sendMessage }
 }

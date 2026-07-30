@@ -9,28 +9,32 @@ import type { ChatMessage } from '@/types/chat'
 
 interface MessageBubbleProps {
   message: ChatMessage
+  isLoading: boolean
   onAskEco: (cardId: Id<'cards'>) => Promise<void>
+  onRetry: (messageId: Id<'messages'>) => Promise<void>
+  previousMessageId?: Id<'messages'>
 }
 
-export function MessageBubble({ message, onAskEco }: MessageBubbleProps): ReactElement {
+export function MessageBubble({ isLoading, message, onAskEco, onRetry, previousMessageId }: MessageBubbleProps): ReactElement {
   const isUser = message.role === 'user'
+  const isError = message.role === 'error'
   const [showTrace, setShowTrace] = useState(false)
   const cards = useQuery(api.functions.cards.getByMessage, { messageId: message.messageId })
-  const trace = useQuery(api.functions.messages.getBlocks, isUser ? 'skip' : { messageId: message.messageId })
+  const trace = useQuery(api.functions.messages.getBlocks, isUser ? 'skip' : { messageId: message.messageId, previousMessageId })
   const time = new Intl.DateTimeFormat([], {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(message.timestamp))
 
   return (
-    <View style={[styles.row, isUser ? styles.userRow : styles.ecoRow]}>
-      <View style={isUser ? styles.userWrap : styles.ecoWrap}>
+    <View style={[styles.row, isUser ? styles.userRow : styles.ecoRow, isError ? styles.errorRow : undefined]}>
+      <View style={[isUser ? styles.userWrap : styles.ecoWrap, isError ? styles.errorWrap : undefined]}>
         <View style={isUser ? styles.userBubble : undefined}>
-          <Text style={[styles.message, isUser ? styles.userMessage : styles.ecoMessage]}>
+          <Text style={[styles.message, isUser ? styles.userMessage : isError ? styles.errorMessage : styles.ecoMessage]}>
             {message.text}
           </Text>
         </View>
-        {!isUser && (trace?.blocks.length ?? 0) > 0 ? (
+        {!isUser && !isError && (trace?.blocks.length ?? 0) > 0 ? (
           <View style={styles.traceWrap}>
             <Pressable accessibilityRole="button" onPress={() => setShowTrace((value) => !value)} style={styles.traceToggle}>
               <Text style={styles.traceLabel}>{showTrace ? 'Hide activity' : 'Show activity'}</Text>
@@ -38,8 +42,19 @@ export function MessageBubble({ message, onAskEco }: MessageBubbleProps): ReactE
             {showTrace ? trace?.blocks.map((block) => <Text key={block._id} style={styles.traceText}>{block.content}</Text>) : null}
           </View>
         ) : null}
-        <Text style={[styles.time, isUser ? styles.userTime : styles.ecoTime]}>{time}</Text>
-        {!isUser ? cards?.map((card) => <WorkoutCard key={card._id} card={card} onAskEco={onAskEco} />) : null}
+        <Text style={[styles.time, isUser ? styles.userTime : styles.ecoTime, isError ? styles.errorTime : undefined]}>{time}</Text>
+        {isError ? (
+          <Pressable
+            accessibilityLabel="Try sending your message again"
+            accessibilityRole="button"
+            disabled={isLoading}
+            onPress={() => void onRetry(message.messageId)}
+            style={[styles.retryButton, isLoading ? styles.retryButtonDisabled : undefined]}
+          >
+            <Text style={styles.retryText}>try again.</Text>
+          </Pressable>
+        ) : null}
+        {!isUser && !isError ? cards?.map((card) => <WorkoutCard key={card._id} card={card} onAskEco={onAskEco} />) : null}
       </View>
     </View>
   )
@@ -50,8 +65,15 @@ const styles = StyleSheet.create({
   ecoRow: { alignItems: 'flex-start', marginBottom: 8 },
   ecoTime: { textAlign: 'left' },
   ecoWrap: { maxWidth: '100%' },
+  errorMessage: { color: '#b9b7b2', fontFamily: 'monospace', fontSize: 12, letterSpacing: 0.2, lineHeight: 18 },
+  errorRow: { marginBottom: 12, marginTop: 4 },
+  errorTime: { color: '#807e78', fontFamily: 'monospace' },
+  errorWrap: { width: '100%' },
   message: { fontFamily: 'serif', fontSize: 15 },
   row: { width: '100%' },
+  retryButton: { alignSelf: 'center', backgroundColor: '#3d8055', borderColor: '#5d9d71', borderRadius: 10, borderWidth: 1, justifyContent: 'center', marginTop: 8, minHeight: 44, width: '50%' },
+  retryButtonDisabled: { opacity: 0.55 },
+  retryText: { color: '#f1f8f2', fontFamily: 'serif', fontSize: 14, fontWeight: '700', lineHeight: 20, textAlign: 'center' },
   time: { color: '#696762', fontFamily: 'serif', fontSize: 10, letterSpacing: 0.1, marginTop: 5 },
   traceLabel: { color: '#92908b', fontFamily: 'serif', fontSize: 11 },
   traceText: { color: '#92908b', fontFamily: 'serif', fontSize: 11, marginTop: 3 },

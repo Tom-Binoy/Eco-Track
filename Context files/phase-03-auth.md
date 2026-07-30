@@ -37,6 +37,36 @@ Add Google OAuth credentials to Convex environment variables (via dashboard):
 - `AUTH_GOOGLE_CLIENT_ID`
 - `AUTH_GOOGLE_CLIENT_SECRET`
 
+#### OAuth redirect configuration (implemented)
+
+Google must be configured with the Convex callback URI, not an Expo app URL:
+
+```text
+https://calm-wombat-225.convex.site/api/auth/callback/google
+```
+
+The app has two deliberately different completion paths:
+
+- **iOS and Android:** `signIn` returns the Google URL; the app opens it with
+  `Linking.openURL`. Google returns through the `eco-track://` custom scheme,
+  and `OAuthCallbackHandler` sends the returned `code` to Convex Auth.
+- **Expo web (local):** Convex Auth redirects the browser itself. Do not call
+  `Linking.openURL` with the returned URL and do not run
+  `OAuthCallbackHandler`; the `ConvexAuthProvider` consumes the `code` in the
+  browser URL. `convex/auth.ts` permits only `http://localhost` and
+  `http://127.0.0.1` redirects for this development flow.
+
+`convex/auth.ts` must continue to allow `eco-track://` plus explicitly trusted
+web origins. Do not allow arbitrary HTTPS redirect destinations: an OAuth
+completion code must only ever be returned to an app-owned origin. Before
+shipping a hosted web build, add that exact HTTPS origin to the redirect
+allowlist and test its full callback flow.
+
+Google's occasional `play.google.com/log` CORS message is background telemetry
+and does not indicate an app OAuth failure. An `accountchooser`/unknown-protocol
+error in Expo web usually means the native redirect handling was applied to the
+browser flow.
+
 ### 2. Profile Creation Mutation
 
 `convex/functions/profiles.ts`
@@ -225,6 +255,8 @@ Get `identity` via `useQuery(api.auth.currentUser)` or Convex Auth's identity ho
 ## Done Checklist
 
 - [ ] Google sign-in works on a real device (opens Google OAuth, returns to app)
+- [ ] Google sign-in works in Expo web at `localhost` without an
+  `accountchooser`/unknown-protocol error
 - [ ] First login creates a `profiles` row in Convex dashboard
 - [ ] Second login does NOT create a duplicate row
 - [ ] Unauthenticated user is redirected to sign-in screen

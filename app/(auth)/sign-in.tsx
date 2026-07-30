@@ -1,5 +1,5 @@
 import * as Linking from 'expo-linking'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native'
 import type { ReactElement } from 'react'
 
 import { useAuth } from '@/hooks/useAuth'
@@ -12,7 +12,7 @@ export default function SignInScreen(): ReactElement {
       redirectTo: Linking.createURL('/'),
     })
 
-    if (redirect !== undefined) {
+    if (Platform.OS !== 'web' && redirect !== undefined) {
       await Linking.openURL(redirect.toString())
     }
   }

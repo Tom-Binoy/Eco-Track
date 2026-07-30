@@ -5,6 +5,8 @@ import { buildChatCompressionPrompt, buildSessionSummaryCompressionPrompt, 'Dail
 
 declare const process: { env: Record<string, string | undefined> }
 
+const modelName = 'gemini-3.1-flash-lite'
+
 export type WorkoutContextContent = Doc<'workoutContext'>['content']
 
 export type DailyCleanupProfileUpdate = Partial<Pick<
@@ -37,7 +39,7 @@ function getModel(generationConfig?: GenerationConfig, systemInstruction?: strin
     throw new Error('GEMINI_API_KEY is not configured')
   }
 
-  return new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: 'gemini-1.5-flash', generationConfig, systemInstruction })
+  return new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: modelName, generationConfig, systemInstruction })
 }
 
 type CompressionMessage = Doc<'messages'> & {

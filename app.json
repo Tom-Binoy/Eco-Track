@@ -2,7 +2,7 @@
   "expo": {
     "name": "Eco Track",
     "scheme": "eco-track",
-    "slug": "eco-track",
+    "slug": "eco-track-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -15,6 +15,20 @@
     },
     "android": {
       "package": "com.anonymous.ecotrack"
-    }
+    },
+    "ios": {
+      "bundleIdentifier": "com.kichu.ecotrack",
+      "supportsTablet": false,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "814b13f5-4780-455f-a2ee-41136cab3ed2"
+      }
+    },
+    "owner": "eco-track-team"
   }
 }

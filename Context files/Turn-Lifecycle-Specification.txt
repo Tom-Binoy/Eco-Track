@@ -41,6 +41,24 @@ labeled `"Card 1"`, `"Card 2"`, etc. (ephemeral, request-scoped mapping —
 never a persisted or schema field) — model only ever sees/echoes labels,
 never real `cards._id`s.
 
+A Gemini response may contain multiple function requests. Persist every request
+in its returned order. Execute independent read-only requests together; keep
+writes and any request that relies on an earlier result ordered. Return every
+executed result as function-response parts in one next model request, preserving
+the corresponding request order. `log_workout` and `Correct_log` are normal
+tool steps: validate, write when valid, return a truthful structured result,
+then allow Gemini to decide the next work and eventually write the one natural
+user reply. Invalid, malformed, redundant, or dependency-breaking requests
+return a specific error result to Gemini rather than a backend-authored reply.
+
+The five-follow-up safety limit counts follow-up **model requests**, not the
+number of function requests in a batch. A follow-up may carry all results from
+one executed batch. The initial model request does not count; the fifth
+follow-up is the final opportunity for Gemini to produce a natural response.
+If it asks for more tool work after that, the backend records a clear limit
+error and uses the existing genuine backend-failure recovery path. This cap is
+independent of the ten-turn naming-guide marker streak.
+
 Eco must call `calculate` for any numeric output a user could reasonably
 double-check later: 1RM estimates, percent-of-1RM back-calculations, plate
 math, volume/tonnage totals, pace conversions, and unit conversions. It must
@@ -64,7 +82,7 @@ only when the wording is a genuine alternate name worth saving, non-empty
 `aliasText` for the next `log_workout`. Its write path creates or updates a
 confirmed alias with `source: "confirmed"` only when that `aliasText` is
 present; `resolved_custom` requires
-`create_custom_exercise` next in the same turn before `log_workout`; and
+`create_custom_exercise` next in the same ordered work sequence before `log_workout`; and
 `still_ambiguous` permits no further tool call and leaves the guide active for
 the next turn. `declined_unsafe` permits no further tool call, writes no card,
 library row, or alias, and closes the guide conversationally. It still records
@@ -88,8 +106,8 @@ sets `source: "custom"`, builds `searchBlob` with the shared name/aliases/
 description helper, immediately writes its `RETRIEVAL_DOCUMENT` embedding, and
 returns the new `exerciseId`. Its aliases seed `exerciseLibrary.aliases` only;
 it never writes `userExerciseAliases`. Eco must receive that `exerciseId`
-before calling `log_workout` in the same turn; these tool calls remain
-sequential within the five-call cap. Before invoking it, Eco must have
+before calling `log_workout` in the same turn; these dependent tool requests
+remain ordered within the five-follow-up model-request cap. Before invoking it, Eco must have
 established through the guide conversation that the user consents to keeping
 the movement custom and that it is not a real exercise under another name.
 This precondition is prompt-enforced, not backend-validated.
@@ -146,9 +164,9 @@ message } }` rather than throwing. Its Zod input is a discriminated union on
 
 BMI, TDEE, and calorie estimation are out of V1 scope.
 
-Response either:
-- **(a)** includes a `functionCall` (args = parse data) → logging/correction turn.
-- **(b)** text only → conversational/query turn.
+Response either includes zero or more function requests, or text only. A batch
+of tool requests is followed by one function-response message containing every
+executed result; Gemini then chooses the next batch or the final reply.
 
 ## 3. Post-Call Validation
 
@@ -156,15 +174,15 @@ Create the Eco `messages` row when processing starts, then complete its
 `ecoText` when the response is available. The client may observe this row and
 its `messageBlocks` trace reactively while processing continues.
 
-- **No tool call** → done, return `reply`.
-- **Tool call fired** → run deterministic Zod validation (types, ranges, enum
+- **No tool request** → done, return `reply`.
+- **Tool request fired** → run deterministic Zod validation (types, ranges, enum
   membership, and required resolved exercise IDs).
 
 `log_workout` validation covers types, ranges, block enums, and a non-empty
 `exerciseId` on every extracted exercise. A missing or empty `exerciseId` is
 the same validation failure as any malformed type, range, or enum value: it
-returns to the existing sequential tool-call/clarification flow and creates no
-card. The write branch is unreachable until this validation passes.
+returns a specific tool result to Gemini and creates no card. The write branch
+is unreachable until this validation passes.
 `needsClarification` determines whether a valid extraction auto-confirms or
 creates a pending card. Vague exercise references are handled conversationally:
 Eco asks for a concrete exercise name and does not call `log_workout`, so there
@@ -177,12 +195,12 @@ new personal `exerciseId` before `log_workout`.
 ## 4. Write Branch
 
 1. Resolve every concrete extracted exercise: aliases resolve immediately; an
-   alias miss uses the capped Call 1 sequential tool loop (`search_exercise_library`
-   then `get_new_exercise_guidance` and `create_custom_exercise` when needed).
-   Every sequential call, including a mid-guide re-invocation of
-   `search_exercise_library`, consumes one of this loop's five calls. This cap
-   is independent of the §7 ten-turn naming-guide marker streak; neither
-   counter increments the other.
+   alias miss uses the batched turn loop (`search_exercise_library` then
+   `get_new_exercise_guidance` and `create_custom_exercise` when needed).
+   Independent read-only searches can share a batch; each dependent step stays
+   ordered. The five-follow-up cap counts model requests after result batches,
+   not individual tool requests, and is independent of the §7 ten-turn
+   naming-guide marker streak; neither counter increments the other.
    Before logging any exercise whose canonical identity Eco cannot already
    resolve through a known alias, it proactively calls the read-only
    `search_exercise_library`; it does not ask permission mid-turn. This search

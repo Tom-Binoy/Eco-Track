@@ -71,7 +71,7 @@ A native iOS + Android app (React Native / Expo) where users log workouts by tal
 
 ## Schema (locked — Phase 7 final)
 
-Full schema lives in `Final-Schema.md` in the working directory. Key facts Codex must know:
+Full schema lives in `Final-Schema.txt` in the working directory. Key facts Codex must know:
 
 - `userId` is `v.id("profiles")` everywhere **except** `profiles.userId` which is the FK to Convex Auth
 - All tables cascade on `profiles` deletion **except** `userReports`
@@ -91,13 +91,13 @@ Full schema lives in `Final-Schema.md` in the working directory. Key facts Codex
 
 ### Tables at a glance
 
-`profiles` · `chats` · `messages` · `cards` · `sessions` · `blocks` · `exercises` · `dailySummaries` · `workoutContext` · `sessionSummaries` · `apiUsage` · `guideInvocations` · `messageFeedback` · `userReports`
+`profiles` · `chats` · `messages` · `cards` · `sessions` · `blocks` · `exercises` · `exerciseLibrary` · `exerciseLibraryEmbeddings` · `userExerciseAliases` · `userExerciseAliasEmbeddings` · `messageBlocks` · `dailySummaries` · `workoutContext` · `sessionSummaries` · `apiUsage` · `guideInvocations` · `messageFeedback` · `userReports`
 
 ---
 
 ## Turn Lifecycle (locked)
 
-Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. Key facts:
+Full spec lives in `Turn-Lifecycle-Specification.txt` in the working directory. Key facts:
 
 1. **Context assembly** — fetch `profiles`, `workoutContext`, `chats.cachedContext`, recent `messages`, `sessionSummaries` before every Gemini call
 2. **Gemini call** — Call 1 always exposes `log_workout`, `Get_data`,
@@ -110,8 +110,12 @@ Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. K
    this does not require mid-turn consent.
    While the existing trailing
    `messages.usedTools` guide-marker streak is active, it also exposes
-   `get_new_exercise_guidance` and `create_custom_exercise`; follow-up calls
-   run sequentially and share the five-follow-up cap. Guidance receives the
+   `get_new_exercise_guidance` and `create_custom_exercise`; a Gemini response
+   may request multiple tools. Independent read-only requests run together,
+   while writes and work that relies on an earlier result remain ordered. All
+   executed results return together to the next model request. The
+   five-follow-up cap counts those follow-up model requests, not individual
+   tools in a batch. Guidance receives the
    unresolved `rawPhrase`, optional concrete `conversationDetail` gathered by
    Eco, and up to five exact `search_exercise_library` candidates (each with
    its description). Its full behavioral guide is injected only in that
@@ -125,11 +129,14 @@ Full spec lives in `Turn-Lifecycle-Specification.md` in the working directory. K
    still-ambiguous stays conversational. `declined_unsafe` is a pure
    conversational close: no card, library write, or alias, while the executed
    guidance call still receives its usual `guideInvocations` review row.
-3. **Response branches** — `functionCall` present → logging turn; text only → conversational turn
+3. **Response branches** — a response may contain a batch of function requests
+   or text only. `log_workout` and `Correct_log` are ordinary tool steps:
+   validate, persist truthfully when valid, return their result to Gemini, and
+   let Gemini produce the one final natural reply.
 4. **Zod validation** — runs after every tool call; `log_workout` requires a
    non-empty resolved `exerciseId` on every extracted exercise in addition to
-   its type, range, and enum checks. A failure reuses the existing
-   clarification/tool-call flow and no card is created.
+   its type, range, and enum checks. A failure returns a specific result to
+   Gemini for recovery and no card is created.
 5. **High confidence write** — creates `sessions` + `blocks` + `exercises` + confirmed `cards`
 6. **Low confidence write** — creates only `cards` (pending); full write happens on user confirm
 7. **Cards behavior** — Ask Eco sets `inDiscussion: true`; the active discussion is visibly signalled above the chat input and only its explicit **Back to deck** action flips it false; correction on confirmed card requires explicit re-confirm before `exercises` are rewritten
