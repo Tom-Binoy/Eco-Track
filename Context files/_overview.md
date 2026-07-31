@@ -61,7 +61,7 @@ The core screen of the entire app. User and Eco messages render in a scrollable 
 
 This is the most complex phase. Replaces the Phase 4 placeholder with the real Gemini call. Assembles context (profile, workout history, recent messages), calls Gemini, validates the response with Zod, then either writes a full session (high confidence) or a pending card (low confidence). Messages are now written to Convex and appear reactively. Token usage is logged to `apiUsage` after every call.
 
-**You know it's done when:** "Did 20 pushups" creates session/blocks/exercises rows in Convex. A conversational message gets a text reply with no database write. Ambiguous input creates a pending card.
+**You know it's done when:** "Did 20 pushups" creates session/blocks/exercises rows in Convex. A conversational message gets a text reply with no database write. Ambiguous input creates a pending card. A repeated broad data lookup is stopped after one request and still ends with a reply. Chat history shows generated tool summaries rather than raw payloads; private raw traces remain available only to approved debugging. Tool results persist the five-follow-up countdown, and the development Debug Console can replay a captured Call 0 safely without executing tools or type-confirm deletion of test messages/chats.
 
 **Time estimate:** 6–10 hours. Take your time here.
 
@@ -157,6 +157,8 @@ Submit to **TestFlight** (iOS) and **Google Play internal testing** (Android). S
 | `phase-08-onboarding.md` | Phase 8 detail |
 | `phase-09-revenuecat.md` | Phase 9 detail |
 | `phase-10-polish.md` | Phase 10 detail |
+
+The active server-side Gemini model is defined once in `convex/lib/geminiConfig.ts` as `GEMINI_MODEL`. It currently uses `gemini-3.6-flash` for main turns, exercise guidance, replay diagnostics, compression, and daily memory.
 
 ---
 

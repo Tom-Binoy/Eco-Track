@@ -1,11 +1,10 @@
-import { GoogleGenerativeAI, SchemaType, type GenerationConfig, type Schema } from '@google/generative-ai'
+import { GoogleGenAI, Type, type GenerateContentConfig, type GenerateContentResponse, type Schema } from '@google/genai'
 
 import type { Doc } from '../_generated/dataModel'
+import { GEMINI_MODEL } from './geminiConfig'
 import { buildChatCompressionPrompt, buildSessionSummaryCompressionPrompt, 'Daily-Cleanup_Prompt' as DailyCleanupPrompt } from './prompts/ecoSystem'
 
 declare const process: { env: Record<string, string | undefined> }
-
-const modelName = 'gemini-3.1-flash-lite'
 
 export type WorkoutContextContent = Doc<'workoutContext'>['content']
 
@@ -33,13 +32,24 @@ export type DailyCleanupResult = {
 
 type GeminiTextResult = { content: string; tokensUsed: number }
 
-function getModel(generationConfig?: GenerationConfig, systemInstruction?: string) {
+function getClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is not configured')
   }
 
-  return new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: modelName, generationConfig, systemInstruction })
+  return new GoogleGenAI({ apiKey })
+}
+
+async function generateContent(
+  contents: string,
+  config?: GenerateContentConfig,
+): Promise<GenerateContentResponse> {
+  return await getClient().models.generateContent({
+    model: GEMINI_MODEL,
+    contents,
+    config: { httpOptions: { timeout: 30_000 }, ...config },
+  })
 }
 
 type CompressionMessage = Doc<'messages'> & {
@@ -59,14 +69,14 @@ function transcript(messages: CompressionMessage[]): string {
   }).join('\n\n')
 }
 
-function getTokensUsed(result: Awaited<ReturnType<ReturnType<typeof getModel>['generateContent']>>): number {
-  return result.response.usageMetadata?.totalTokenCount ?? 0
+function getTokensUsed(result: GenerateContentResponse): number {
+  return result.usageMetadata?.totalTokenCount ?? 0
 }
 
 export async function summariseMessages(messages: CompressionMessage[]): Promise<GeminiTextResult> {
-  const result = await getModel().generateContent(buildChatCompressionPrompt(transcript(messages)))
+  const result = await generateContent(buildChatCompressionPrompt(transcript(messages)))
 
-  return { content: result.response.text().trim(), tokensUsed: getTokensUsed(result) }
+  return { content: (result.text ?? '').trim(), tokensUsed: getTokensUsed(result) }
 }
 
 export async function summariseSessionSummaries(
@@ -76,20 +86,20 @@ export async function summariseSessionSummaries(
     .sort((left, right) => left.order - right.order)
     .map((summary) => `[Summary ${summary.order + 1}]\n${summary.content}`)
     .join('\n\n')
-  const result = await getModel().generateContent(buildSessionSummaryCompressionPrompt(source))
+  const result = await generateContent(buildSessionSummaryCompressionPrompt(source))
 
-  return { content: result.response.text().trim(), tokensUsed: getTokensUsed(result) }
+  return { content: (result.text ?? '').trim(), tokensUsed: getTokensUsed(result) }
 }
 
 export async function generateDailySummary(
   input: DailyCleanupInput,
 ): Promise<DailyCleanupResult> {
-  const model = getModel({
+  const result = await generateContent(buildDailyCleanupInput(input), {
     responseMimeType: 'application/json',
     responseSchema: dailyCleanupSchema,
-  }, DailyCleanupPrompt)
-  const result = await model.generateContent(buildDailyCleanupInput(input))
-  const parsed: unknown = JSON.parse(result.response.text())
+    systemInstruction: DailyCleanupPrompt,
+  })
+  const parsed: unknown = JSON.parse(result.text ?? '')
   if (!isDailyCleanupResult(parsed)) throw new Error('Gemini returned an invalid daily cleanup result')
   return {
     summaryContent: parsed.dailySummary,
@@ -132,56 +142,56 @@ function buildDailyCleanupInput(input: DailyCleanupInput): string {
 }
 
 const injurySchema: Schema = {
-  type: SchemaType.OBJECT,
+  type: Type.OBJECT,
   properties: {
-    description: { type: SchemaType.STRING },
-    status: { type: SchemaType.STRING },
-    notedAt: { type: SchemaType.NUMBER },
+    description: { type: Type.STRING },
+    status: { type: Type.STRING },
+    notedAt: { type: Type.NUMBER },
   },
   required: ['description', 'status', 'notedAt'],
 }
 
 const workoutContextSchema: Schema = {
-  type: SchemaType.OBJECT,
+  type: Type.OBJECT,
   nullable: true,
   properties: {
-    currentFocus: { type: SchemaType.STRING },
-    recentProgress: { type: SchemaType.STRING },
-    consistency: { type: SchemaType.STRING },
-    notableAchievements: { type: SchemaType.STRING },
-    considerations: { type: SchemaType.STRING },
+    currentFocus: { type: Type.STRING },
+    recentProgress: { type: Type.STRING },
+    consistency: { type: Type.STRING },
+    notableAchievements: { type: Type.STRING },
+    considerations: { type: Type.STRING },
   },
   required: ['currentFocus', 'recentProgress', 'consistency', 'notableAchievements', 'considerations'],
 }
 
 const dailyCleanupSchema: Schema = {
-  type: SchemaType.OBJECT,
+  type: Type.OBJECT,
   properties: {
-    dailySummary: { type: SchemaType.STRING },
+    dailySummary: { type: Type.STRING },
     profileUpdate: {
-      type: SchemaType.OBJECT,
+      type: Type.OBJECT,
       nullable: true,
       properties: {
-        goals: { type: SchemaType.STRING },
-        equipment: { type: SchemaType.STRING },
-        trainingPattern: { type: SchemaType.STRING },
+        goals: { type: Type.STRING },
+        equipment: { type: Type.STRING },
+        trainingPattern: { type: Type.STRING },
         trainingAvailability: {
-          type: SchemaType.OBJECT,
-          properties: { daysPerWeek: { type: SchemaType.NUMBER }, sessionLength: { type: SchemaType.NUMBER } },
+          type: Type.OBJECT,
+          properties: { daysPerWeek: { type: Type.NUMBER }, sessionLength: { type: Type.NUMBER } },
           required: ['daysPerWeek', 'sessionLength'],
         },
         skillLevel: {
-          type: SchemaType.OBJECT,
+          type: Type.OBJECT,
           properties: {
-            strength: { type: SchemaType.STRING }, flexibility: { type: SchemaType.STRING }, endurance: { type: SchemaType.STRING },
-            calisthenicsSkills: { type: SchemaType.STRING }, sportSpecific: { type: SchemaType.STRING }, bodyComposition: { type: SchemaType.STRING },
+            strength: { type: Type.STRING }, flexibility: { type: Type.STRING }, endurance: { type: Type.STRING },
+            calisthenicsSkills: { type: Type.STRING }, sportSpecific: { type: Type.STRING }, bodyComposition: { type: Type.STRING },
           },
           required: ['strength', 'flexibility', 'endurance', 'calisthenicsSkills', 'sportSpecific', 'bodyComposition'],
         },
-        injuries: { type: SchemaType.ARRAY, items: injurySchema },
+        injuries: { type: Type.ARRAY, items: injurySchema },
       },
     },
-    profileUpdateNote: { type: SchemaType.STRING, nullable: true },
+    profileUpdateNote: { type: Type.STRING, nullable: true },
     workoutContext: workoutContextSchema,
   },
   required: ['dailySummary', 'profileUpdate', 'profileUpdateNote', 'workoutContext'],

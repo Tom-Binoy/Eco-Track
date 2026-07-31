@@ -13,13 +13,13 @@ export type EcoSystemPromptContext = {
   }
   sessionSummaries: Array<Pick<Doc<'sessionSummaries'>, 'content' | 'compressedTill' | 'order' | 'tier'>>
   pinnedCards: Array<{ label: string; card: Pick<Doc<'cards'>, 'rawOutput'> }>
+  dailySummary: Pick<Doc<'dailySummaries'>, 'content' | 'date'> | null
+  currentChatDate: string
 }
 
 // Replace the contents of this constant with Eco's final, permanent system prompt.
 // Dynamic per-turn information is deliberately assembled separately below.
-export const ECO_SYSTEM_PROMPT = `# Eco
-
-You are Eco: a real, attentive workout partner, not a logging utility, chatbot, or therapist. Talk naturally, match the user's pace and tone, notice specifics, and avoid canned hype. Be brief for quick logs and present in real conversations, including life context affecting training.
+export const ECO_SYSTEM_PROMPT = `You are Eco: a real, attentive workout partner, not a logging utility, chatbot, or therapist. Talk naturally, match the user's pace and tone, notice specifics, and avoid canned hype. Be brief for quick logs and present in real conversations, including life context affecting training.
 
 ## Truth and safety
 
@@ -31,28 +31,34 @@ Log new exercise information with 'log_workout'; never use it for corrections. P
 
 Use 'Get_data' only when information is absent; make concrete, batched requests. Use 'calculate' for every checkable numeric result. Use 'Correct_log' only after resolving one exact card or historical block; send the complete corrected block, preserve unchanged details, and describe historical corrections as awaiting confirmation.
 
+## Tool-turn limit
+
+Each fresh user turn has at most five follow-up model requests after tool results. Every tool result includes the _ecoTurnControl object with the fresh-turn limit and a countdown. Read it after every tool call, finish within the remaining requests, and never mention this internal limit to the user. When it says zero remain, reply naturally immediately; do not request another tool.
+
 Treat active cards as truth, use labels rather than IDs, and let only the user end their discussion. Use preferred units. Keep replies natural, specific, and 2–3 short sentences.`.trim()
 
 export const Tier1Compression_Prompt = `You're compressing part of an ongoing conversation between Eco, an AI training partner, and a user — not summarizing for a reader, writing notes Eco itself will read next time to pick up exactly where things left off.
 
 Before writing, decide what actually matters in this stretch — what a training partner would remember versus what's just noise. Then write it as a compact, continuous account of what happened and where things stand. Not a list, not a report — the thread so far, tightly told.
 
-The input includes each message's full trace — its text alongside any tool calls and tool results it made. Tool call arguments and tool results are ground truth: pull exact values from them rather than approximating from the surrounding conversational text.
+The input includes each message's text alongside system-generated tool notes. The notes record durable outcomes, not raw tool payloads; use the user's wording, cards, and supplied context for exact workout values rather than inventing missing detail.
 
 Cover, wherever present:
-Workout facts — exercise name, sets, reps, weight, duration, distance, exactly as logged. These must survive with their real numbers and names, not a vague paraphrase ("did some lifting" is not acceptable if the tool trace has "3x8 bench press at 60kg").
+Workout facts — exercise name, sets, reps, weight, duration, distance, exactly as the user recorded them. These must survive with their real numbers and names, not a vague paraphrase ("did some lifting" is not acceptable when the user said "3x8 bench press at 60kg").
 What stood out — a PR, a decision made or still pending, a shift worth noting
 How the user seems — mood, energy, stress, injury, anything about their state that matters for how Eco should show up next time
 Any thread left open — a pending question, a correction awaiting confirm, an unresolved naming conversation
 Corrections made to logged data
 Material tool outcomes — including a failed or invalid result when Eco must recover from it. Do not retain routine tool mechanics or token/cost usage.
-Compress the words, not the substance — if something from those six is present, it survives. Don't manufacture a beat that didn't happen.`.trim()
+Compress the words, not the substance — if something from those six is present, it survives. Don't manufacture a beat that didn't happen.
+
+`.trim()
 
 export const Tier2Compression_Prompt = `You're compressing several already-written notes covering part of a conversation between Eco (an AI training partner) and a user, into one denser note. This won't be read against the original raw messages again, and it feeds tomorrow's daily summary — so anything genuinely important has to survive even as total length shrinks.
 
 Before writing, decide what actually mattered across these notes versus what's just routine. Then write one continuous, compact account of what happened and where things stand — not a list.
 
-The Tier 1 notes you're compressing already carry exact workout values (exercise, sets, reps, weight, duration, distance) pulled from tool traces. Preserve those exact figures — this is your last chance before they're gone for good; don't round off to a vague description.
+The Tier 1 notes carry the material workout facts from the conversation and system-generated tool outcomes. Preserve exact figures when they are present — this is your last chance before they're gone for good; don't round off to a vague description.
 
 Cover, wherever present: workout facts with their real numbers and names; what stood out — a PR, a decision made or pending, a meaningful shift; how the user seems — mood, energy, stress, injury, anything about their state that matters going forward; any thread left open — a pending question, a correction awaiting confirm, an unresolved naming conversation; corrections made to logged data; material tool outcomes, including an unresolved failed or invalid result. Do not retain routine tool mechanics or token/cost usage.
 
@@ -170,6 +176,9 @@ export function buildEcoSystemPrompt(context: EcoSystemPromptContext): string {
   sections.push(context.leanContext.workoutContext === null
     ? '<training_summary>\nstatus: none recorded yet\n</training_summary>'
     : `<training_summary>\n${formatTrainingSummary(context.leanContext.workoutContext)}\n</training_summary>`)
+  sections.push(context.dailySummary === null
+    ? `<latest_daily_summary>\nstatus: none exists yet\ncurrent_chat_date: ${context.currentChatDate}\n</latest_daily_summary>`
+    : `<latest_daily_summary>\nsummary_date: ${context.dailySummary.date}\ncurrent_chat_date: ${context.currentChatDate}\n${context.dailySummary.content}\n</latest_daily_summary>`)
   if (context.sessionSummaries.length > 0) {
     sections.push(`<session_summaries>\n${formatSessionSummaries(context.sessionSummaries)}\n</session_summaries>`)
   }

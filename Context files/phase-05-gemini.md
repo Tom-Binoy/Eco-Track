@@ -56,30 +56,63 @@ Replace the Phase 4 placeholder response with the full Gemini turn lifecycle. Th
 > consent to keep it custom and rules out a real exercise under another name;
 > this precondition is prompt-enforced, not backend validation.
 
-> **Runtime and recovery status (2026-07-30):** The main-turn and exercise-name
-> guidance calls use `gemini-3.1-flash-lite` with the server-only
-> `GEMINI_API_KEY`. If Gemini startup or a tool continuation fails after a
+> **Runtime and recovery status (2026-07-31):** The main-turn and exercise-name
+> guidance calls use `gemini-3.6-flash` with the server-only `GEMINI_API_KEY`.
+> The shared source of truth is `convex/lib/geminiConfig.ts`; change
+> `GEMINI_MODEL` there for a deliberate model evaluation. If Gemini startup or a tool continuation fails after a
 > message row exists, the action safely completes that row with the generic
 > unavailable message while the precise non-secret cause is written to Convex
 > action logs. A retry passes the failed message ID rather than new text: the
 > backend verifies ownership, clears any partial `messageBlocks`, excludes that
 > row from its regenerated context, and reuses its stored user text. It does
-> not insert a second `messages` row. The development-facing **Show activity**
-> UI renders only persisted Gemini tool calls/results (never text blocks or
+> not insert a second `messages` row. When the latest turn is failed, the chat
+> input is disabled and Retry is the only available continuation. The
+> development-facing **Show activity**
+> UI renders only persisted system-generated tool summaries (never text blocks or
 > internal context assembly) and suppresses entries already shown in the
 > immediately preceding Eco response. Full ordered `messageBlocks` remain
 > persisted and are still supplied to Gemini and compression as required.
 
-> **Batched turn-loop update (2026-07-30):** The installed Gemini SDK exposes
-> every request through `response.functionCalls()` and accepts an array of
-> `functionResponse` parts in the next `sendMessage`. `processTurn` persists
-> each request and its result in order. It executes contiguous independent
+> **Gemini SDK and batched turn-loop update (2026-07-31):** Server-side Gemini
+> callers use `@google/genai` 2.13.0; the deprecated `@google/generative-ai`
+> package is not retained. The main turn uses the current typed chat API, and
+> daily cleanup/compression use the same SDK. Each typed `FunctionCall.id` is
+> copied into its matching typed `FunctionResponse.id` in the next chat
+> message. `processTurn` persists
+> each request and its result in private `toolTraces`, while client/model
+> history receives only generated summary notes. It executes contiguous independent
 > read-only work together, keeps writes and dependency-sensitive work ordered,
 > and sends all batch results back before Gemini chooses another batch or its
 > one final natural reply. `log_workout` and `Correct_log` are no longer terminal
 > branches. Invalid or inefficient requests receive specific tool-result errors
 > for Gemini to recover from. The five-follow-up safety limit counts follow-up
-> model requests, so a batch does not consume one slot per tool.
+> model requests, so a batch does not consume one slot per tool. Each executed
+> result carries persisted `_ecoTurnControl` countdown metadata, which Gemini
+> must use to finish naturally on its final continuation without mentioning it
+> to the user; an over-limit request closes conversationally rather than Retry.
+> Historic
+> locally fabricated replies are excluded from Gemini history. Durable tool
+> summaries remain in context; raw tool payloads remain internal debug data.
+
+> **Get_data containment and replay diagnostics (2026-07-31):** Gemini may
+> still select an unnecessary initial lookup, so the runtime enforces a narrow
+> safety boundary: one general `Get_data` request (profile fields, daily
+> summary, or date range) per turn, plus only the documented later `Exercise N`
+> detail request after a historical range. A repeated general request is
+> persisted as rejected with `redundant_data_lookup`, never executed, and ends
+> with the existing local conversational fallback rather than a failed turn.
+> When the development debug flag is enabled, the first request is also stored
+> as a replayable Call 0 snapshot. The approved debug console can run the fixed
+> six-variant, five-samples-each replay suite without executing tools or
+> changing user data or `apiUsage`. Existing older traces are reconstructed and
+> labelled as such. Replay critique is explicitly post-hoc diagnostic text,
+> never hidden Gemini reasoning.
+
+> **Thought-signature decision (2026-07-31):** Main-turn continuations retain
+> the same typed `Chat` object. Its official SDK preserves the whole preceding
+> model response, including opaque Gemini 3 `thoughtSignature` parts, before it
+> sends function responses. The application must preserve matching function IDs
+> but must not manually insert or fabricate thought signatures.
 
 The turn lifecycle runs as a **Convex action** (not a mutation) because it calls an external API (Gemini). Actions can call mutations internally.
 
@@ -216,9 +249,9 @@ export async function assembleContext(ctx, chatId, authUserId) {
   const recentMessages = await ctx.runQuery(api.functions.messages.getRecent, { chatId, limit: 20 })
 
   // 5. Get ordered message blocks for every raw message in the turn window.
-  // Include text, tool calls, and tool results when constructing Gemini history,
-  // even if a prior tool failed or its output was invalid. Never query apiUsage
-  // for prompt assembly.
+  // Include text and generated tool summaries when constructing Gemini history.
+  // Raw requests/results remain internal debug data. Never query apiUsage for
+  // prompt assembly.
   const messageBlocks = await ctx.runQuery(
     api.functions.messageBlocks.getForMessages,
     { messageIds: recentMessages.map(message => message._id) }
@@ -326,7 +359,7 @@ const LOG_WORKOUT_TOOL = {
 
 export async function callGemini(context, userText: string) {
   const model = genAI.getGenerativeModel({
-    model: "gemini-3.1-flash-lite",
+    model: "gemini-3.6-flash",
     tools: [{ functionDeclarations: [LOG_WORKOUT_TOOL] }],
     toolConfig: { functionCallingMode: FunctionCallingMode.AUTO },
   })

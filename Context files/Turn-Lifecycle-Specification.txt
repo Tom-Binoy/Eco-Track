@@ -15,11 +15,12 @@ Per `(userId, chatId)`, before the Gemini call:
 - **`chats.cachedContext`** — if present and fresh (built at session start), reuse instead of re-fetching `profiles`/`workoutContext` above. Cache lives for the day, invalidated by daily-cleanup.
 - **`messages`** — recent N rows via `by_chat`, ordered by `timestamp`. Always fetched fresh (cheapest, always-changing part).
 - **`messageBlocks`** — fetch the persisted blocks for every raw message
-  included above, ordered by message timestamp then block `order`. Send their
-  text, tool-call, and tool-result content to Gemini as the turn history.
-  Preserve the trace exactly: a tool call or result remains in context even if
-  it was invalid, failed, or led to a mistaken model response. `apiUsage` and
-  `guideInvocations` are never fetched for or included in Gemini context.
+  included above, ordered by message timestamp then block `order`. Send text
+  and system-generated tool summaries to Gemini as the turn history. Raw tool
+  requests/results, including invalid or failed calls, are retained only in
+  internal `toolTraces` for authorized debugging and never reach Gemini,
+  compression, or normal chat UI. `apiUsage` and `guideInvocations` are never
+  included in Gemini context.
 - **`sessionSummaries`** — via `by_chat_and_tier`, latest `compressedTill` per tier, used once raw messages exceed the token-size threshold.
 - **Pinned card injection**: query `cards` for this chat where `inDiscussion === true`, then inject their `rawOutput`/`parsedData`. `messages.cardContext.closed` is UI decoration only and is never used for prompt injection.
 
@@ -45,18 +46,29 @@ A Gemini response may contain multiple function requests. Persist every request
 in its returned order. Execute independent read-only requests together; keep
 writes and any request that relies on an earlier result ordered. Return every
 executed result as function-response parts in one next model request, preserving
-the corresponding request order. `log_workout` and `Correct_log` are normal
+the corresponding request order. Every function response also carries the exact
+`FunctionCall.id` of the request it answers; this correlation is required even
+when several calls share the same function name. The same typed `Chat` instance
+must continue the whole tool loop: the official `@google/genai` SDK retains the
+full preceding model response, including Gemini 3's opaque `thoughtSignature`.
+Do not manufacture or manually copy a `thoughtSignature` into a function
+response. `log_workout` and `Correct_log` are normal
 tool steps: validate, write when valid, return a truthful structured result,
 then allow Gemini to decide the next work and eventually write the one natural
-user reply. Invalid, malformed, redundant, or dependency-breaking requests
-return a specific error result to Gemini rather than a backend-authored reply.
+user reply. Invalid, malformed, or dependency-breaking requests return a
+specific error result to Gemini rather than a backend-authored reply. The
+special repeated general-`Get_data` containment rule is defined below.
 
 The five-follow-up safety limit counts follow-up **model requests**, not the
 number of function requests in a batch. A follow-up may carry all results from
 one executed batch. The initial model request does not count; the fifth
 follow-up is the final opportunity for Gemini to produce a natural response.
-If it asks for more tool work after that, the backend records a clear limit
-error and uses the existing genuine backend-failure recovery path. This cap is
+Every executed function result includes persisted `_ecoTurnControl` metadata
+with the fresh-turn limit, completed request count, remaining request count,
+and an instruction to finish when no requests remain. Gemini must use that
+countdown without mentioning it to the user. If it still asks for more tool
+work after that, the backend records the rejected call/result and closes the
+turn with the existing conversational fallback, without Retry. This cap is
 independent of the ten-turn naming-guide marker streak.
 
 Eco must call `calculate` for any numeric output a user could reasonably
@@ -132,6 +144,15 @@ The tool result always has `profile`, `dailySummary`, and `exercises` keys.
 that `Get_data` flow has returned it. Any of these read requests may be
 combined in one call, but Eco must not request data speculatively.
 
+At most one general `Get_data` request runs in a turn. A general request is one
+for profile fields, a daily summary, or a date range; it must batch every needed
+general read. The sole permitted later lookup is `exerciseId: "Exercise N"`
+after that turn's date-range response. If Gemini requests another general
+lookup, persist its raw rejected request/result in internal `toolTraces`, write
+a safe rejection summary in `messageBlocks`, and record a `redundant_data_lookup`
+debug warning. Do not execute it; finish with the existing local conversational
+fallback rather than failing the message or showing Retry.
+
 `calculate` is pure computation: no database reads or writes, no profile
 unit-preference lookup, and no external calls. Every success returns
 `{ operation, result, ...operationSpecificFields }`; invalid numeric domains
@@ -174,6 +195,15 @@ Create the Eco `messages` row when processing starts, then complete its
 `ecoText` when the response is available. The client may observe this row and
 its `messageBlocks` trace reactively while processing continues.
 
+If startup or a tool continuation fails, complete that row with the generic
+unavailable message and retain the detailed non-secret cause only in action
+logs/debug events. The latest failed turn locks the chat input; Retry reuses
+that message ID and stored user text, clears its partial `messageBlocks`, and
+does not create another `messages` row. Historic locally fabricated assistant
+fallback text is omitted from regenerated Gemini history, while the associated
+persisted tool summaries remain available. Full raw payloads remain private
+debug traces only.
+
 - **No tool request** → done, return `reply`.
 - **Tool request fired** → run deterministic Zod validation (types, ranges, enum
   membership, and required resolved exercise IDs).
@@ -199,7 +229,9 @@ new personal `exerciseId` before `log_workout`.
    `get_new_exercise_guidance` and `create_custom_exercise` when needed).
    Independent read-only searches can share a batch; each dependent step stays
    ordered. The five-follow-up cap counts model requests after result batches,
-   not individual tool requests, and is independent of the §7 ten-turn
+   not individual tool requests. Each executed result carries persisted
+   `_ecoTurnControl` countdown metadata, and Gemini must reply naturally when
+   its remaining count reaches zero. The cap is independent of the §7 ten-turn
    naming-guide marker streak; neither counter increments the other.
    Before logging any exercise whose canonical identity Eco cannot already
    resolve through a known alias, it proactively calls the read-only
@@ -288,19 +320,19 @@ new personal `exerciseId` before `log_workout`.
   exercise rows render `displayedName` as the primary name and render the
   canonical name as a clearly legible secondary line only when the two names
   differ.
-- `messageBlocks` are written in order as text, tool calls, and tool results.
-  They are client-visible and are also the persisted tool history for main-turn
-  Gemini context. Invalid or failed tool traces are retained rather than hidden
-  from the model. Token/cost records in `apiUsage` remain backend-only and are
-  never sent to Gemini.
+- `messageBlocks` are written in order as text and `tool_summary` notes. The
+  notes are client-visible and are the persisted main-turn Gemini history.
+  Invalid or failed calls receive a safe concise note. Full requests/results are
+  written to internal-only `toolTraces`; they are never sent to Gemini.
+  Token/cost records in `apiUsage` remain backend-only.
 
 ## 8. Memory / Reflection Triggers
 
 - **`sessionSummaries` compression**: a token/size-estimate threshold on the
-  compressible raw messages and their persisted `messageBlocks` (not message
-  count or time-based) is scheduled post-turn, non-blocking, once Gemini has
-  completed the message; it is never scheduled between tool calls. Tier 1 receives each
-  source message’s ordered text/tool-call/tool-result trace; Tier 2 receives
+  compressible raw messages and their persisted text/tool-summary `messageBlocks`
+  (not message count or time-based) is scheduled post-turn, non-blocking, once
+  Gemini has completed the message; it is never scheduled between tool calls.
+  Tier 1 receives each source message’s ordered text/tool-summary history; Tier 2 receives
   the resulting Tier 1 summaries and therefore retains material tool outcomes.
   Failed or invalid tool results must be represented when they affect recovery
   or an unresolved thread. Neither tier receives `apiUsage`. Progress is tracked

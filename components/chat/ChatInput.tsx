@@ -7,20 +7,21 @@ import type { Card } from '@/types/db'
 interface ChatInputProps {
   discussionCard: Card | null | undefined
   discussionError: string | null
+  hasFailedTurn: boolean
   isLoading: boolean
   isClosingDiscussion: boolean
   onBringCardBackToDeck: () => void | Promise<void>
   onSend: (text: string) => void | Promise<void>
 }
 
-export function ChatInput({ discussionCard, discussionError, isClosingDiscussion, isLoading, onBringCardBackToDeck, onSend }: ChatInputProps): ReactElement {
+export function ChatInput({ discussionCard, discussionError, hasFailedTurn, isClosingDiscussion, isLoading, onBringCardBackToDeck, onSend }: ChatInputProps): ReactElement {
   const [text, setText] = useState('')
-  const canSend = text.trim().length > 0 && !isLoading
+  const canSend = text.trim().length > 0 && !isLoading && !hasFailedTurn
 
   const handleSend = (): void => {
     const trimmedText = text.trim()
 
-    if (!trimmedText || isLoading) {
+    if (!trimmedText || isLoading || hasFailedTurn) {
       return
     }
 
@@ -58,13 +59,13 @@ export function ChatInput({ discussionCard, discussionError, isClosingDiscussion
           value={text}
           onChangeText={setText}
           onSubmitEditing={handleSend}
-          placeholder="What did you train today?"
+          placeholder={hasFailedTurn ? 'Retry Eco’s failed response to continue' : 'What did you train today?'}
           placeholderTextColor="#9a9893"
           multiline
           style={styles.input}
           returnKeyType="send"
           blurOnSubmit={false}
-          editable={!isLoading}
+          editable={!isLoading && !hasFailedTurn}
         />
         <Pressable
           accessibilityLabel="Send message"

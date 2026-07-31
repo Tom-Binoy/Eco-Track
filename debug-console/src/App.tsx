@@ -1,5 +1,5 @@
 import { useAuthActions } from '@convex-dev/auth/react'
-import { useConvexAuth, useMutation, useQuery } from 'convex/react'
+import { useAction, useConvexAuth, useMutation, useQuery } from 'convex/react'
 import { makeFunctionReference } from 'convex/server'
 import { useMemo, useState, type ReactElement } from 'react'
 
@@ -7,6 +7,7 @@ import type { Doc, Id } from '../../convex/_generated/dataModel'
 
 type TurnSummary = {
   chatDate: string
+  chatId: Id<'chats'>
   eventCount: number
   messageId: Id<'messages'>
   timestamp: number
@@ -38,8 +39,16 @@ type TurnDetailResult =
       chat: { date: string }
       events: DebugEvent[]
       messageBlocks: Doc<'messageBlocks'>[]
+      toolTraces: Doc<'toolTraces'>[]
       cards: Doc<'cards'>[]
       guideInvocations: Doc<'guideInvocations'>[]
+    }
+
+type ReplayExperimentResult =
+  | { error: string }
+  | {
+      experiment: Doc<'debugReplayExperiments'> | null
+      results: Doc<'debugReplayResults'>[]
     }
 
 const listTurnsQuery = makeFunctionReference<
@@ -57,6 +66,31 @@ const getTurnDetailQuery = makeFunctionReference<
   { messageId: Id<'messages'> },
   TurnDetailResult
 >('debug/events:getTurnDetail')
+const getReplayExperimentQuery = makeFunctionReference<
+  'query',
+  { messageId: Id<'messages'> },
+  ReplayExperimentResult
+>('debug/events:getReplayExperiment')
+const runReplayExperimentAction = makeFunctionReference<
+  'action',
+  { messageId: Id<'messages'> },
+  { experimentId?: Id<'debugReplayExperiments'>; error?: string }
+>('debug/replay:runExperiment')
+const runReplayCritiqueAction = makeFunctionReference<
+  'action',
+  { experimentId: Id<'debugReplayExperiments'> },
+  { critique?: string; error?: string }
+>('debug/replay:runCritique')
+const deleteMessageMutation = makeFunctionReference<
+  'mutation',
+  { messageId: Id<'messages'>; confirmation: 'DELETE MESSAGE' },
+  { deleted?: boolean; cardsDeleted?: number; error?: string }
+>('debug/events:deleteMessage')
+const forceDeleteChatMutation = makeFunctionReference<
+  'mutation',
+  { chatId: Id<'chats'>; confirmation: 'DELETE CHAT' },
+  { deleted?: boolean; messagesDeleted?: number; cardsDeleted?: number; error?: string }
+>('debug/events:forceDeleteChat')
 
 const warningLabels: Record<string, string> = {
   follow_up_cap_reached: 'Follow-up cap reached',
@@ -118,6 +152,22 @@ function safeExportValue(value: unknown): unknown {
     }
   }
   return value
+}
+
+function systemInstructionFromDetails(details: string | undefined): string | null {
+  if (details === undefined) return null
+  try {
+    const parsed: unknown = JSON.parse(details)
+    if (
+      typeof parsed === 'object'
+      && parsed !== null
+      && 'systemInstruction' in parsed
+      && typeof parsed.systemInstruction === 'string'
+    ) return parsed.systemInstruction
+  } catch {
+    // Keep the raw diagnostic payload available when it is not JSON.
+  }
+  return null
 }
 
 function SignIn({ access }: { access: AccessResult | undefined }): ReactElement {
@@ -271,9 +321,18 @@ function EventTimeline({
   )
 }
 
-function TurnDetail({ messageId }: { messageId: Id<'messages'> }): ReactElement {
+function TurnDetail({ messageId, chatId }: { messageId: Id<'messages'>; chatId: Id<'chats'> }): ReactElement {
   const detail = useQuery(getTurnDetailQuery, { messageId })
+  const replay = useQuery(getReplayExperimentQuery, { messageId })
+  const runReplay = useAction(runReplayExperimentAction)
+  const runCritique = useAction(runReplayCritiqueAction)
+  const deleteMessage = useMutation(deleteMessageMutation)
+  const forceDeleteChat = useMutation(forceDeleteChatMutation)
   const [copyLabel, setCopyLabel] = useState('Copy safe JSON')
+  const [replayBusy, setReplayBusy] = useState(false)
+  const [replayError, setReplayError] = useState<string | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   if (detail === undefined) {
     return <div className="detail-loading">Loading ordered trace…</div>
@@ -290,13 +349,16 @@ function TurnDetail({ messageId }: { messageId: Id<'messages'> }): ReactElement 
     message: detail.message,
     events: detail.events,
     messageBlocks: detail.messageBlocks,
+    toolTraces: detail.toolTraces,
     cards: detail.cards,
     guideInvocations: detail.guideInvocations,
+    replay: replay !== undefined && !('error' in replay) ? replay : undefined,
   })
   const exportJson = JSON.stringify(exportPayload, null, 2)
   const initialModelRequest = detail.events.find(
     (event) => event.title === 'Gemini call 0 started',
   )?.details
+  const initialSystemInstruction = systemInstructionFromDetails(initialModelRequest)
 
   const copyExport = async (): Promise<void> => {
     await navigator.clipboard.writeText(exportJson)
@@ -313,6 +375,81 @@ function TurnDetail({ messageId }: { messageId: Id<'messages'> }): ReactElement 
     anchor.click()
     URL.revokeObjectURL(url)
   }
+
+  const startReplay = async (): Promise<void> => {
+    if (!window.confirm('Run the fixed replay suite? This makes at most 30 development-only Gemini requests and executes no tools.')) return
+    setReplayBusy(true)
+    setReplayError(null)
+    try {
+      const result = await runReplay({ messageId })
+      if (result.error !== undefined) setReplayError(result.error)
+    } catch (error) {
+      setReplayError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setReplayBusy(false)
+    }
+  }
+
+  const startCritique = async (): Promise<void> => {
+    if (replay === undefined || 'error' in replay || replay.experiment === null) return
+    setReplayBusy(true)
+    setReplayError(null)
+    try {
+      const result = await runCritique({ experimentId: replay.experiment._id })
+      if (result.error !== undefined) setReplayError(result.error)
+    } catch (error) {
+      setReplayError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setReplayBusy(false)
+    }
+  }
+
+  const removeMessage = async (): Promise<void> => {
+    const confirmation = window.prompt(
+      'Delete this message, its cards, and all debug/replay records? Confirmed workout-session history remains. Type DELETE MESSAGE to continue.',
+    )
+    if (confirmation !== 'DELETE MESSAGE') return
+    setDeleteBusy(true)
+    setDeleteError(null)
+    try {
+      const result = await deleteMessage({ messageId, confirmation })
+      if (result.error !== undefined) setDeleteError(result.error)
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
+  const removeChat = async (): Promise<void> => {
+    const confirmation = window.prompt(
+      'Force-delete this whole chat, its messages, cards, summaries, and debug/replay records? Confirmed workout-session history remains. Type DELETE CHAT to continue.',
+    )
+    if (confirmation !== 'DELETE CHAT') return
+    setDeleteBusy(true)
+    setDeleteError(null)
+    try {
+      const result = await forceDeleteChat({ chatId, confirmation })
+      if (result.error !== undefined) setDeleteError(result.error)
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
+  const replayGroups = replay === undefined || 'error' in replay
+    ? []
+    : [...new Set(replay.results.map((result) => result.variant))].map((variant) => {
+        const results = replay.results.filter((result) => result.variant === variant)
+        return {
+          variant,
+          results,
+          getDataCount: results.filter((result) => result.getDataSelected).length,
+          totalTokens: results.reduce((total, result) => total + result.totalTokens, 0),
+          requestedFields: [...new Set(results.flatMap((result) => result.requestedFields))],
+        }
+      })
 
   return (
     <div className="turn-detail">
@@ -334,8 +471,15 @@ function TurnDetail({ messageId }: { messageId: Id<'messages'> }): ReactElement 
           <button className="quiet-button" onClick={downloadExport} type="button">
             Download
           </button>
+          <button className="danger-button" disabled={deleteBusy} onClick={() => void removeMessage()} type="button">
+            Delete message
+          </button>
+          <button className="danger-button" disabled={deleteBusy} onClick={() => void removeChat()} type="button">
+            Delete chat
+          </button>
         </div>
       </div>
+      {deleteError !== null ? <p className="detail-error">{deleteError}</p> : null}
 
       {detail.events.length > 0 ? (
         <EventTimeline events={detail.events} />
@@ -350,10 +494,83 @@ function TurnDetail({ messageId }: { messageId: Id<'messages'> }): ReactElement 
           <p className="section-kicker">MODEL INPUT · CALL 0</p>
           <details className="record-card">
             <summary>System prompt, assembled history, current message, and available tools</summary>
+            {initialSystemInstruction !== null ? (
+              <div className="raw-panel">
+                <div className="raw-heading">
+                  <span className="detail-label">SYSTEM INSTRUCTION · RENDERED</span>
+                  <span>newlines shown as sent to Gemini</span>
+                </div>
+                <pre>{initialSystemInstruction}</pre>
+              </div>
+            ) : null}
             <pre>{initialModelRequest}</pre>
           </details>
         </section>
       ) : null}
+
+      <section className="persisted-section replay-lab">
+        <div className="replay-heading">
+          <div>
+            <p className="section-kicker">CALL 0 REPLAY LAB</p>
+            <p className="toolbar-note">
+              Six fixed variants · five samples each · no tool execution or user-turn writes
+            </p>
+          </div>
+          <button
+            className="primary-button"
+            disabled={replayBusy || (replay !== undefined && !('error' in replay) && replay.experiment?.status === 'running')}
+            onClick={() => void startReplay()}
+            type="button"
+          >
+            {replayBusy ? 'Running…' : 'Run 30-request suite'}
+          </button>
+        </div>
+        {replayError !== null ? <p className="detail-error">{replayError}</p> : null}
+        {replay !== undefined && 'error' in replay ? <p className="detail-error">{replay.error}</p> : null}
+        {replay !== undefined && !('error' in replay) && replay.experiment !== null ? (
+          <>
+            <div className="replay-status">
+              <span className={`status-${replay.experiment.status}`}>{replay.experiment.status}</span>
+              <span>{replay.experiment.snapshotSource} snapshot</span>
+              <span>{replay.results.length}/30 samples</span>
+            </div>
+            <div className="replay-grid">
+              {replayGroups.map((group) => (
+                <details className="record-card" key={group.variant}>
+                  <summary>
+                    {group.variant}
+                    <span>{group.getDataCount}/{group.results.length} Get_data</span>
+                  </summary>
+                  <div className="replay-summary">
+                    <span>{group.totalTokens.toLocaleString()} tokens</span>
+                    <span>{group.requestedFields.join(', ') || 'No Get_data fields'}</span>
+                  </div>
+                  <pre>{JSON.stringify(group.results, null, 2)}</pre>
+                </details>
+              ))}
+            </div>
+            {replay.experiment.status === 'completed' ? (
+              <button
+                className="quiet-button"
+                disabled={replayBusy}
+                onClick={() => void startCritique()}
+                type="button"
+              >
+                {replay.experiment.critique === undefined ? 'Run post-hoc critique' : 'Refresh post-hoc critique'}
+              </button>
+            ) : null}
+            {replay.experiment.critique !== undefined ? (
+              <div className="critique-panel">
+                <strong>POST-HOC CRITIQUE · NOT HIDDEN REASONING</strong>
+                <p>{replay.experiment.critique}</p>
+                <span>{replay.experiment.critiqueTokens ?? 0} tokens</span>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="empty-detail">No replay experiment has been run for this turn.</p>
+        )}
+      </section>
 
       <section className="persisted-section">
         <p className="section-kicker">PERSISTED RECORDS</p>
@@ -361,6 +578,10 @@ function TurnDetail({ messageId }: { messageId: Id<'messages'> }): ReactElement 
           <details className="record-card">
             <summary>messageBlocks <span>{detail.messageBlocks.length}</span></summary>
             <pre>{JSON.stringify(detail.messageBlocks, null, 2)}</pre>
+          </details>
+          <details className="record-card">
+            <summary>private toolTraces <span>{detail.toolTraces.length}</span></summary>
+            <pre>{JSON.stringify(detail.toolTraces, null, 2)}</pre>
           </details>
           <details className="record-card">
             <summary>cards <span>{detail.cards.length}</span></summary>
@@ -420,7 +641,7 @@ function TurnRow({ turn }: { turn: TurnSummary }): ReactElement {
           ))}
         </div>
       ) : null}
-      {expanded ? <TurnDetail messageId={turn.messageId} /> : null}
+      {expanded ? <TurnDetail chatId={turn.chatId} messageId={turn.messageId} /> : null}
     </article>
   )
 }

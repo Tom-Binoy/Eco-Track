@@ -53,4 +53,41 @@ export const debugTables = {
   })
     .index('by_message_and_sequence', ['messageId', 'sequence'])
     .index('by_user_and_createdAt', ['userId', 'createdAt']),
+  debugReplaySnapshots: defineTable({
+    userId: v.id('profiles'),
+    messageId: v.id('messages'),
+    runId: v.string(),
+    payload: v.string(),
+    capturedAt: v.number(),
+  })
+    .index('by_message', ['messageId'])
+    .index('by_user_and_capturedAt', ['userId', 'capturedAt']),
+  debugReplayExperiments: defineTable({
+    userId: v.id('profiles'),
+    messageId: v.id('messages'),
+    status: v.union(v.literal('running'), v.literal('completed'), v.literal('failed')),
+    snapshotSource: v.union(v.literal('captured'), v.literal('reconstructed')),
+    createdAt: v.number(),
+    completedAt: v.optional(v.number()),
+    error: v.optional(v.string()),
+    critique: v.optional(v.string()),
+    critiqueTokens: v.optional(v.number()),
+  })
+    .index('by_message_and_createdAt', ['messageId', 'createdAt'])
+    .index('by_user_and_createdAt', ['userId', 'createdAt']),
+  debugReplayResults: defineTable({
+    experimentId: v.id('debugReplayExperiments'),
+    variant: v.string(),
+    sampleIndex: v.number(),
+    rawText: v.string(),
+    finalText: v.string(),
+    functionCalls: v.string(),
+    getDataSelected: v.boolean(),
+    requestedFields: v.array(v.string()),
+    promptTokens: v.optional(v.number()),
+    outputTokens: v.optional(v.number()),
+    totalTokens: v.number(),
+    durationMs: v.number(),
+    error: v.optional(v.string()),
+  }).index('by_experiment_and_variant', ['experimentId', 'variant']),
 }

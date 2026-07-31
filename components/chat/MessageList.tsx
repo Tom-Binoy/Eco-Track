@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { ReactElement } from 'react'
-import { FlatList, StyleSheet, View } from 'react-native'
+import { FlatList, StyleSheet, Text, View } from 'react-native'
 
 import type { ChatMessage } from '@/types/chat'
 import type { Id } from '@/convex/_generated/dataModel'
@@ -15,9 +15,10 @@ interface MessageListProps {
   onAskEco: (cardId: Id<'cards'>) => Promise<void>
   onRetry: (messageId: Id<'messages'>) => Promise<void>
   onSelectStarter: (text: string) => void
+  turnStatus: string | null
 }
 
-export function MessageList({ isLoading, messages, onAskEco, onRetry, onSelectStarter }: MessageListProps): ReactElement {
+export function MessageList({ isLoading, messages, onAskEco, onRetry, onSelectStarter, turnStatus }: MessageListProps): ReactElement {
   const listRef = useRef<FlatList<ChatMessage>>(null)
 
   useEffect(() => {
@@ -36,7 +37,14 @@ export function MessageList({ isLoading, messages, onAskEco, onRetry, onSelectSt
         return <MessageBubble isLoading={isLoading} message={item} onAskEco={onAskEco} onRetry={onRetry} previousMessageId={previousEcoMessage?.messageId} />
       }}
       ListEmptyComponent={<EmptyChatState onSelectStarter={onSelectStarter} />}
-      ListFooterComponent={isLoading ? <TypingIndicator /> : null}
+      ListFooterComponent={
+        isLoading || turnStatus !== null ? (
+          <View style={styles.footer}>
+            {isLoading ? <TypingIndicator /> : null}
+            {turnStatus !== null ? <Text style={styles.turnStatus}>{turnStatus}</Text> : null}
+          </View>
+        ) : null
+      }
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
       onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
@@ -48,5 +56,7 @@ export function MessageList({ isLoading, messages, onAskEco, onRetry, onSelectSt
 
 const styles = StyleSheet.create({
   content: { flexGrow: 1, paddingBottom: 32, paddingHorizontal: 16, paddingTop: 32 },
+  footer: { width: '100%' },
   list: { flex: 1 },
+  turnStatus: { color: '#b9b7b2', fontFamily: 'monospace', fontSize: 12, letterSpacing: 0.2, lineHeight: 18, marginTop: 8, textAlign: 'center' },
 })

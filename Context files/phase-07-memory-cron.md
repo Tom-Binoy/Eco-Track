@@ -19,7 +19,8 @@ Read Turn Lifecycle §7 (Memory / Reflection Triggers) carefully before starting
 
 > **Runtime model update (2026-07-30):** All daily-cleanup and
 > memory-compression generations in `convex/lib/dailyCheck.ts` now use
-> `gemini-3.1-flash-lite` through the shared model helper. This changes only
+> `gemini-3.6-flash` through `convex/lib/geminiConfig.ts` and its shared
+> `GEMINI_MODEL` constant. This changes only
 > the provider model; the locked cleanup, compression, and write lifecycle is
 > unchanged.
 
@@ -33,8 +34,8 @@ Read Turn Lifecycle §7 (Memory / Reflection Triggers) carefully before starting
 
 Compression fires **post-turn, non-blocking** when the compressible raw
 messages for a chat, including their persisted `messageBlocks`, exceed a
-token-size estimate threshold. Tier 1 receives each message’s ordered text,
-tool-call, and tool-result trace, including failed or invalid tool results.
+token-size estimate threshold. Tier 1 receives each message’s ordered text and
+tool-summary history, including safe notes for failed or invalid tool results.
 It summarises older messages into a `sessionSummaries` row and stops injecting
 those raw messages into the context. `apiUsage` is never included.
 
@@ -88,7 +89,7 @@ export const compressIfNeeded = action({
     if (toCompress.length === 0) return
 
     // Fetch each candidate message’s ordered messageBlocks, then call Gemini
-    // to summarise. Tool calls/results, including failed or invalid results,
+    // to summarise. Tool summaries, including failed or invalid outcomes,
     // are part of the Tier 1 source; apiUsage is excluded.
     const summary = await summariseMessages(toCompress)
 
@@ -108,7 +109,7 @@ const TOKEN_THRESHOLD = 6000
 
 async function summariseMessages(messages: Message[]): Promise<string> {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
-  const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite" })
+  const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" })
 
   const transcript = messages.map(m =>
     `User: ${m.userText}\nEco: ${m.ecoText}`

@@ -12,6 +12,7 @@ import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
 import type * as debug_config from "../debug/config.js";
 import type * as debug_events from "../debug/events.js";
+import type * as debug_replay from "../debug/replay.js";
 import type * as debug_sanitise from "../debug/sanitise.js";
 import type * as debug_trace from "../debug/trace.js";
 import type * as debug_warnings from "../debug/warnings.js";
@@ -35,7 +36,11 @@ import type * as lib_calculate from "../lib/calculate.js";
 import type * as lib_dailyCheck from "../lib/dailyCheck.js";
 import type * as lib_exerciseNormalization from "../lib/exerciseNormalization.js";
 import type * as lib_gemini from "../lib/gemini.js";
+import type * as lib_geminiConfig from "../lib/geminiConfig.js";
+import type * as lib_prompts_candidates_gemini35FlashLite from "../lib/prompts/candidates/gemini35FlashLite.js";
+import type * as lib_prompts_candidates_gemini36Flash from "../lib/prompts/candidates/gemini36Flash.js";
 import type * as lib_prompts_ecoSystem from "../lib/prompts/ecoSystem.js";
+import type * as lib_toolSummary from "../lib/toolSummary.js";
 import type * as lib_validation from "../lib/validation.js";
 
 import type {
@@ -49,6 +54,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   "debug/config": typeof debug_config;
   "debug/events": typeof debug_events;
+  "debug/replay": typeof debug_replay;
   "debug/sanitise": typeof debug_sanitise;
   "debug/trace": typeof debug_trace;
   "debug/warnings": typeof debug_warnings;
@@ -72,7 +78,11 @@ declare const fullApi: ApiFromModules<{
   "lib/dailyCheck": typeof lib_dailyCheck;
   "lib/exerciseNormalization": typeof lib_exerciseNormalization;
   "lib/gemini": typeof lib_gemini;
+  "lib/geminiConfig": typeof lib_geminiConfig;
+  "lib/prompts/candidates/gemini35FlashLite": typeof lib_prompts_candidates_gemini35FlashLite;
+  "lib/prompts/candidates/gemini36Flash": typeof lib_prompts_candidates_gemini36Flash;
   "lib/prompts/ecoSystem": typeof lib_prompts_ecoSystem;
+  "lib/toolSummary": typeof lib_toolSummary;
   "lib/validation": typeof lib_validation;
 }>;
 
@@ -102,4 +112,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  migrations: import("@convex-dev/migrations/_generated/component.js").ComponentApi<"migrations">;
+};

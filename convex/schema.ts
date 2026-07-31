@@ -189,11 +189,28 @@ export default defineSchema({
   messageBlocks: defineTable({
     messageId: v.id('messages'),
     order: v.number(),
-    type: v.union(v.literal('text'), v.literal('tool_call'), v.literal('tool_result')),
+    type: v.union(v.literal('text'), v.literal('tool_summary')),
     content: v.string(),
     toolName: v.optional(v.string()),
     createdAt: v.number(),
   }).index('by_message', ['messageId']),
+
+  // Internal-only raw tool payloads. They are deliberately separate from
+  // messageBlocks so the chat UI, Gemini history, and memory never read them.
+  toolTraces: defineTable({
+    messageId: v.id('messages'),
+    userId: v.id('profiles'),
+    order: v.number(),
+    toolName: v.string(),
+    functionCallId: v.optional(v.string()),
+    requestJson: v.string(),
+    resultJson: v.optional(v.string()),
+    status: v.union(v.literal('pending'), v.literal('completed'), v.literal('rejected')),
+    createdAt: v.number(),
+    completedAt: v.optional(v.number()),
+  })
+    .index('by_message', ['messageId'])
+    .index('by_user_and_message', ['userId', 'messageId']),
 
   dailySummaries: defineTable({
     chatId: v.id('chats'),
@@ -256,7 +273,9 @@ export default defineSchema({
     rating: v.union(v.literal('up'), v.literal('down')),
     comment: v.optional(v.string()),
     timestamp: v.number(),
-  }).index('by_rating', ['rating']),
+  })
+    .index('by_rating', ['rating'])
+    .index('by_message', ['messageId']),
 
   userReports: defineTable({
     userId: v.id('profiles'),

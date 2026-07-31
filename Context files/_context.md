@@ -26,7 +26,7 @@ A native iOS + Android app (React Native / Expo) where users log workouts by tal
 | Frontend | React Native + Expo |
 | Backend / DB | Convex (serverless + reactive) |
 | Auth | Convex Auth (Google OAuth) |
-| AI | Gemini API |
+| AI | Gemini API via `@google/genai` |
 | Validation | Zod |
 | Payments | RevenueCat |
 | Language | TypeScript (strict mode) |
@@ -84,14 +84,15 @@ Full schema lives in `Final-Schema.txt` in the working directory. Key facts Code
   It is never sent to Gemini,
   never answers whether naming guidance is active, and cascades through its
   parent message under both chat-deletion paths.
-- Main-turn Gemini context includes persisted `messageBlocks` (text, tool calls,
-  and tool results) for the raw messages in the turn context. Tool traces,
-  including invalid or failed results, stay available to Gemini; `apiUsage` and
-  `guideInvocations` records never do.
+- Main-turn Gemini context includes persisted `messageBlocks` (text and
+  system-generated `tool_summary` notes) for the raw messages in the turn
+  context. Raw requests/results, including invalid or failed results, live only
+  in internal `toolTraces` for authorized debugging and never reach Gemini,
+  compression, or normal chat clients.
 
 ### Tables at a glance
 
-`profiles` · `chats` · `messages` · `cards` · `sessions` · `blocks` · `exercises` · `exerciseLibrary` · `exerciseLibraryEmbeddings` · `userExerciseAliases` · `userExerciseAliasEmbeddings` · `messageBlocks` · `dailySummaries` · `workoutContext` · `sessionSummaries` · `apiUsage` · `guideInvocations` · `messageFeedback` · `userReports`
+`profiles` · `chats` · `messages` · `cards` · `sessions` · `blocks` · `exercises` · `exerciseLibrary` · `exerciseLibraryEmbeddings` · `userExerciseAliases` · `userExerciseAliasEmbeddings` · `messageBlocks` · `toolTraces` · `dailySummaries` · `workoutContext` · `sessionSummaries` · `apiUsage` · `guideInvocations` · `messageFeedback` · `userReports`
 
 ---
 
@@ -115,7 +116,11 @@ Full spec lives in `Turn-Lifecycle-Specification.txt` in the working directory. 
    while writes and work that relies on an earlier result remain ordered. All
    executed results return together to the next model request. The
    five-follow-up cap counts those follow-up model requests, not individual
-   tools in a batch. Guidance receives the
+   tools in a batch. Every executed result persists and returns
+   `_ecoTurnControl` with the fresh-turn limit and remaining-request countdown;
+   Gemini must finish naturally when it reaches zero and never mention that
+   internal limit to the user. A request beyond the limit is retained as a
+   rejected trace and ends with a conversational fallback, not Retry. Guidance receives the
    unresolved `rawPhrase`, optional concrete `conversationDetail` gathered by
    Eco, and up to five exact `search_exercise_library` candidates (each with
    its description). Its full behavioral guide is injected only in that
@@ -133,6 +138,14 @@ Full spec lives in `Turn-Lifecycle-Specification.txt` in the working directory. 
    or text only. `log_workout` and `Correct_log` are ordinary tool steps:
    validate, persist truthfully when valid, return their result to Gemini, and
    let Gemini produce the one final natural reply.
+   Main-turn function-call and function-response IDs are preserved and matched
+   through the typed `@google/genai` SDK. The same SDK `Chat` instance carries
+   Gemini 3 thought signatures through a tool loop; never manually add a
+   `thoughtSignature` to a function response. One general `Get_data` lookup
+   (profile fields, a daily summary, or date range) may run per turn, with only
+   the documented `Exercise N` detail lookup allowed after a historical range.
+   A repeated general lookup is traced and stopped locally, then Eco receives
+   the existing conversational fallback instead of a failed turn.
 4. **Zod validation** — runs after every tool call; `log_workout` requires a
    non-empty resolved `exerciseId` on every extracted exercise in addition to
    its type, range, and enum checks. A failure returns a specific result to
@@ -142,8 +155,8 @@ Full spec lives in `Turn-Lifecycle-Specification.txt` in the working directory. 
 7. **Cards behavior** — Ask Eco sets `inDiscussion: true`; the active discussion is visibly signalled above the chat input and only its explicit **Back to deck** action flips it false; correction on confirmed card requires explicit re-confirm before `exercises` are rewritten
 8. **Memory** — the hourly `daily-cleanup` cron buckets users by timezone and runs at local midnight. One Gemini call writes a `dailySummaries` row plus optional typed profile and `workoutContext` updates, then purges that day's `sessionSummaries`; no-chat days write nothing. Its context always includes at least the two most recent available daily summaries, or all summaries since the last workout-context update when that is larger. Cleanup receives the full profile, latest context, that window, chronological tier-1/tier-2 summaries, and the uncompressed raw tail.
 9. **Compression** — token-size threshold on raw messages plus their persisted
-   `messageBlocks` triggers a non-blocking, post-turn `sessionSummaries` write.
-   Tier 1 receives each message’s ordered text/tool-call/tool-result trace;
+   text and `tool_summary` `messageBlocks` triggers a non-blocking, post-turn
+   `sessionSummaries` write. Tier 1 receives each message’s ordered text/note history;
    Tier 2 receives the resulting Tier 1 summaries. Both tiers preserve material
    tool outcomes, including failed or invalid results that require recovery, but
    never receive `apiUsage`. Compression is scheduled once every Gemini turn
@@ -219,6 +232,24 @@ judgment.
 - Vector/semantic search over messages or daily summaries (exercise-library
   resolution is implemented in V1)
 - `retainChatHistory` toggle
+
+---
+
+## Development-only Gemini diagnostics (2026-07-31)
+
+When `ECO_DEBUG_CONSOLE_ENABLED=true`, the development Debug Console records
+ordered turn traces and exact Call 0 replay snapshots. Approved debug admins can
+run a fixed 30-request, Call-0-only replay suite: five samples each of the
+baseline, no-`Get_data`, no-daily-summary, explicit greeting rule, hardened
+`Get_data` description, and unambiguous-greeting variants. Replays never
+execute tools or write product messages, workouts, cards, aliases, or user
+`apiUsage`; their results and token use are isolated in debug-only tables. An
+optional model critique is diagnostic commentary, not access to hidden model
+reasoning. Older traces may be reconstructed from their sanitized Call 0 event
+and must be labelled as reconstructed.
+Approved debug admins can type-confirm deletion of a message or force deletion
+of a chat. These development-only actions delete the associated diagnostics and
+chat/card data but retain confirmed workout sessions, blocks, and exercises.
 
 ---
 

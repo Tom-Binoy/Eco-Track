@@ -43,9 +43,10 @@ Reconciled against the Turn Lifecycle Spec (consolidated):
   canonical name and a displayed name; the latter uses matching user-alias
   wording while the former remains available for later UI treatment.
 - **Corrections and trace** — `cards.correctsBlockId`, `messages.usedTools`,
-  and `messageBlocks` support historical corrections, guide trace/history, the
-  client-visible processing trace, AND (reversed from earlier phases —
-  see next bullet) main-turn Gemini context and tier-1 compression.
+  and summary-only `messageBlocks` support historical corrections, guide
+  history, client-visible activity, main-turn Gemini context, and Tier-1
+  compression. Internal `toolTraces` retain the corresponding raw payloads for
+  authorized debugging only.
 - **Naming-guide tool availability (reversal)** — guide-active state gates
   availability of `get_new_exercise_guidance`; this reverses the prior lock
   that the guide system lived in the standard Call 1 toolset with no
@@ -68,13 +69,12 @@ Reconciled against the Turn Lifecycle Spec (consolidated):
   candidates including nullable descriptions; this remains a prompt/tool
   contract, not persisted schema state.
 - **`messageBlocks` now read into context/compression (reversal)** —
-  earlier phases treated `messageBlocks` as presentation-only, never read
-  by the model. That's reversed: `messageBlocks` is now sent to Gemini as
-  turn history during context assembly (Turn Lifecycle Spec §1) and folded
-  into tier-1 compression (Turn Lifecycle Spec §8). Full historical
-  `messageBlocks` is fed in — not scoped to just an active naming-guide
-  window — as a v1 default, to be revisited once there's real usage data.
-  `apiUsage` remains the one exception: backend-only, never sent to Gemini.
+  earlier phases treated `messageBlocks` as presentation-only, never read by
+  the model. They now provide text and tool-summary turn history during context
+  assembly (Turn Lifecycle Spec §1) and Tier-1 compression (Turn Lifecycle
+  Spec §8). Full historical notes are fed in—not scoped to just an active
+  naming-guide window. Raw tool payloads live only in `toolTraces`; `apiUsage`
+  also remains backend-only.
 - **wger catalogue** — global library rows retain `wgerId`; it is the
   idempotent upsert key for the public wger seed action.
 
@@ -358,22 +358,35 @@ userExerciseAliasEmbeddings: {
 messageBlocks: {
   messageId   // FK -> messages
   order       // number, chronological within the response trace
-  type        // "text" | "tool_call" | "tool_result"
+  type        // "text" | "tool_summary"
   content     // string
   toolName    // optional string
   createdAt   // number
 }
 .index('by_message', ['messageId'])
 
-// REVERSED (was: presentation-only, never read during context assembly):
-// messageBlocks is now read into main-turn Gemini context (Turn Lifecycle
-// Spec §1) and folded into tier-1 compression (Turn Lifecycle Spec §8),
-// in addition to remaining client-visible for the processing-trace UI.
-// Full historical messageBlocks is fed in (not scoped to just an active
-// naming-guide window) as a v1 default, to be revisited once there's real
-// usage data. Invalid/failed tool traces are retained rather than hidden
-// from the model. Still cascades with its parent message under both chat
-// deletion paths.
+// messageBlocks is read into Gemini context and tier-1 compression, as well
+// as remaining client-visible for the processing activity UI. It never stores
+// raw tool payloads; invalid/failed calls become safe concise summary notes.
+
+toolTraces: {
+  messageId       // FK -> messages
+  userId          // FK -> profiles
+  order           // number, execution order within the message
+  toolName        // string
+  functionCallId  // optional SDK correlation ID
+  requestJson     // raw private request payload
+  resultJson      // optional raw private result payload
+  status          // "pending" | "completed" | "rejected"
+  createdAt       // number
+  completedAt     // optional number
+}
+.index('by_message', ['messageId'])
+.index('by_user_and_message', ['userId', 'messageId'])
+
+// Internal-only debug data. Never returned by normal chat queries, included in
+// Gemini history, or passed to compression. Cascades with its parent message
+// under both chat-deletion paths.
 
 
 dailySummaries: {
@@ -439,9 +452,8 @@ sessionSummaries: {
 .index('by_chat_and_tier', ['chatId', 'tier'])
 // Ephemeral — purged at the app level once a chat's dailySummaries entry
 // is written (same daily-check cron, see workoutContext note above).
-// Tier 1 rows are built from each source message's ordered text/tool-call/
-// tool-result trace (i.e. include messageBlocks content, per the reversal
-// above); tier 2 compacts tier 1 summaries and therefore retains material
+// Tier 1 rows are built from each source message's ordered text/tool-summary
+// history; tier 2 compacts tier 1 summaries and therefore retains material
 // tool outcomes transitively.
 
 // CASCADE: deleted under BOTH chats deletion paths (sweep and force-delete).
@@ -488,13 +500,14 @@ messageFeedback: {
   comment     // optional string, only when rating = "down"
   timestamp   // number
 }
+.index('by_message', ['messageId'])
 .index('by_rating', ['rating'])
-// No index on userId or messageId yet — by_message deferred to the v2
-// review-screen feature (Phase 4 note, still valid).
+// No index on userId. The by_message index supports the development-only
+// typed-confirmation delete control as well as the future review screen.
 
 // CASCADE: cascades whenever its parent message is deleted — resolved
-// this design session. Reasoning: messages are only ever deleted as part
-// of a chats cascade (no standalone message-deletion path exists), and
+// this design session. Reasoning: messages are deleted as part of a chats
+// cascade or by the development-only typed-confirmation debug control, and
 // the intended v2 use of messageFeedback is a review screen pairing
 // feedback with the message that caused it. An orphaned feedback row
 // would be un-actionable, not merely unreferenced, and no confirmed use
@@ -526,6 +539,23 @@ userReports: {
 ```
 
 ---
+
+## Development-only debug additions (2026-07-31)
+
+The production schema contract above remains unchanged. When the development
+debug console is enabled, `convex/debug/schema.ts` adds isolated diagnostics:
+`debugConsoleApprovals`, `debugTurnEvents`, `debugReplaySnapshots`,
+`debugReplayExperiments`, and `debugReplayResults`. They hold debug-admin
+approval, sanitized traces, exact server-side Call 0 snapshots, and replay
+results respectively. These tables are not product data, are never included in
+Gemini context, and are removed with the development debug surface rather than
+treated as a V1 product-schema feature.
+
+Approved debug admins may also remove one message or force-delete one chat
+through the development console only. Each action requires typed confirmation
+and removes its diagnostics, replay artifacts, cards, and chat-scoped summary
+rows according to the force-delete cascade. Confirmed workout sessions, blocks,
+and exercises remain independent workout history.
 
 ## Tables removed / folded in
 

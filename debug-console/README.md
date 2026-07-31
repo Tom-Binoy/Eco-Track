@@ -49,6 +49,14 @@ date, then inspect only that date's turns. User names are not displayed.
 - database write receipts;
 - per-call model token usage and useful durations;
 - persisted message blocks, cards, and guide invocations.
+- an approved-admin-only Call 0 replay lab with fixed diagnostic variants,
+  five samples per variant, token totals, and an optional post-hoc critique.
+- typed-confirmation controls to delete one message or force-delete one chat.
+
+Replay experiments never execute returned tools or write product messages,
+cards, workouts, aliases, or user `apiUsage`. Future debug turns store an exact
+server-side Call 0 snapshot; older turns are reconstructed from their sanitized
+trace and labelled accordingly.
 
 Debug payloads are sanitized before insertion. API keys, authorization values,
 tokens, cookies, passwords, and authentication user identifiers are redacted.
@@ -73,6 +81,9 @@ Do not enable `ECO_DEBUG_CONSOLE_ENABLED` on a production deployment.
 
 ## Explicitly deferred
 
-This MVP does not change Eco's tool selection, stop repeated tools, block
-evidence-poor `log_workout` calls, replay turns, mutate data, or provide the
-future production feedback/major-error monitoring screen.
+This development surface does not change Eco's tool selection, block
+evidence-poor `log_workout` calls, or provide the future production
+feedback/major-error monitoring screen. Its only permitted product-data
+mutation is a typed-confirmation deletion by an approved debug admin. That
+removes chat/message records, cards, summaries, and diagnostics; confirmed
+workout sessions, blocks, and exercises remain intact.

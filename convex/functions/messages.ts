@@ -15,6 +15,7 @@ import {
 } from '../lib/gemini'
 import { EXERCISE_NAMING_GUIDANCE } from '../lib/prompts/ecoSystem'
 import { executeCalculate } from '../lib/calculate'
+import { toolResultSummary, toolStartSummary, type ToolTraceStatus } from '../lib/toolSummary'
 import { createCustomExerciseSchema, newExerciseGuidanceInputSchema, type ToolCallData, validateToolCall } from '../lib/validation'
 import { serialiseDebugDetails, serialiseDebugError } from '../debug/sanitise'
 import { createDebugRunId, recordDebugEvent, type DebugEventInput } from '../debug/trace'
@@ -23,6 +24,8 @@ import { DEBUG_WARNING, workoutEvidenceWarning } from '../debug/warnings'
 const recentMessageLimit = 50
 const guideMarker = 'exercise_naming_guide_active'
 const responseUnavailableText = 'Eco could not respond right now. Please try again.'
+const followUpRequestLimit = 5
+const followUpLimitFallback = 'Let’s pause there for now. What would you like to focus on next?'
 type TurnContext = GeminiContext & { chat: Doc<'chats'>; cacheIsFresh: boolean }
 type TurnResult = { ecoText: string; cardId?: Id<'cards'>; error?: string }
 type CachedContext = LeanContext
@@ -62,6 +65,23 @@ function dataLookupFallback(result: object): string {
     ? `Hey ${name}! I’m here. How has your training been feeling lately?`
     : 'I’m here. How has your training been feeling lately?'
 }
+function withTurnControl(
+  result: Record<string, unknown>,
+  completedFollowUpRequests: number,
+): Record<string, unknown> {
+  const remainingFollowUpRequests = Math.max(followUpRequestLimit - completedFollowUpRequests, 0)
+  return {
+    ...result,
+    _ecoTurnControl: {
+      freshTurnFollowUpLimit: followUpRequestLimit,
+      completedFollowUpRequests,
+      remainingFollowUpRequests,
+      instruction: remainingFollowUpRequests === 0
+        ? 'This is the fifth and final follow-up for this turn. Reply naturally to the user now. Do not request another tool.'
+        : `${remainingFollowUpRequests} follow-up request${remainingFollowUpRequests === 1 ? '' : 's'} remain in this fresh turn. Finish within the limit and do not mention it to the user.`,
+    },
+  }
+}
 function isCachedContext(value: unknown): value is CachedContext { return typeof value === 'object' && value !== null && 'name' in value && typeof value.name === 'string' && 'tonePreference' in value && 'activeInjuries' in value && 'workoutContext' in value }
 function isCacheFresh(cachedAt: number | undefined, timezone: string): boolean { if (cachedAt === undefined) return false; try { const f = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }); return f.format(new Date(cachedAt)) === f.format(new Date()) } catch { return new Date(cachedAt).toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10) } }
 
@@ -88,6 +108,7 @@ export const getTurnContext = internalQuery({
     const messages = await Promise.all(rawMessages.map(async (message) => ({
       ...message,
       messageBlocks: (await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', message._id)).take(50))
+        .filter((block) => block.type === 'text' || block.type === 'tool_summary')
         .sort((left, right) => left.order - right.order),
     })))
     const pinnedCards = (await ctx.db.query('cards').withIndex('by_chat', (q) => q.eq('chatId', chat._id)).take(50)).filter((card) => card.inDiscussion).map((card) => ({ label: `Card ${card.order + 1}`, card }))
@@ -107,8 +128,12 @@ export const prepareRetryMessage = internalMutation({
     const message = await ctx.db.get(args.messageId)
     if (profile === null || chat === null || chat.userId !== profile._id || message === null || message.chatId !== chat._id) return { error: 'Message not found' }
     if (message.ecoText !== responseUnavailableText) return { error: 'Only failed messages can be retried' }
-    const blocks = await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', message._id)).collect()
+    const [blocks, traces] = await Promise.all([
+      ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', message._id)).collect(),
+      ctx.db.query('toolTraces').withIndex('by_message', (q) => q.eq('messageId', message._id)).collect(),
+    ])
     for (const block of blocks) await ctx.db.delete(block._id)
+    for (const trace of traces) await ctx.db.delete(trace._id)
     await ctx.db.patch(message._id, { ecoText: '', usedTools: undefined })
     return { messageId: message._id, userText: message.userText }
   },
@@ -132,7 +157,25 @@ export const completeMessage = internalMutation({
   },
 })
 export const setMessageSession = internalMutation({ args: { messageId: v.id('messages'), sessionId: v.id('sessions') }, handler: async (ctx, args) => { await ctx.db.patch(args.messageId, { sessionId: args.sessionId }); return null } })
-export const appendBlock = internalMutation({ args: { messageId: v.id('messages'), order: v.number(), type: v.union(v.literal('text'), v.literal('tool_call'), v.literal('tool_result')), content: v.string(), toolName: v.optional(v.string()) }, handler: async (ctx, args) => await ctx.db.insert('messageBlocks', { ...args, createdAt: Date.now() }) })
+export const appendBlock = internalMutation({ args: { messageId: v.id('messages'), order: v.number(), type: v.union(v.literal('text'), v.literal('tool_summary')), content: v.string(), toolName: v.optional(v.string()) }, handler: async (ctx, args) => await ctx.db.insert('messageBlocks', { ...args, createdAt: Date.now() }) })
+export const startToolTrace = internalMutation({
+  args: { messageId: v.id('messages'), userId: v.id('profiles'), order: v.number(), toolName: v.string(), functionCallId: v.optional(v.string()), requestJson: v.string() },
+  handler: async (ctx, args): Promise<Id<'toolTraces'> | { error: string }> => {
+    const message = await ctx.db.get(args.messageId)
+    const chat = message === null ? null : await ctx.db.get(message.chatId)
+    if (chat === null || chat.userId !== args.userId) return { error: 'Message not found' }
+    return await ctx.db.insert('toolTraces', { ...args, status: 'pending', createdAt: Date.now() })
+  },
+})
+export const completeToolTrace = internalMutation({
+  args: { traceId: v.id('toolTraces'), resultJson: v.string(), status: v.union(v.literal('completed'), v.literal('rejected')) },
+  handler: async (ctx, args): Promise<null | { error: string }> => {
+    const trace = await ctx.db.get(args.traceId)
+    if (trace === null) return { error: 'Tool trace not found' }
+    await ctx.db.patch(trace._id, { resultJson: args.resultJson, status: args.status, completedAt: Date.now() })
+    return null
+  },
+})
 export const getBlocks = query({
   args: { messageId: v.id('messages'), previousMessageId: v.optional(v.id('messages')) },
   handler: async (ctx, args) => {
@@ -143,14 +186,14 @@ export const getBlocks = query({
     if (profile === null || message === null || chat?.userId !== profile._id) return { error: 'Message not found', blocks: [] }
 
     const blocks = (await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).take(50))
-      .filter((block) => block.type !== 'text')
+      .filter((block) => block.type === 'tool_summary')
       .sort((left, right) => left.order - right.order)
     if (args.previousMessageId === undefined) return { blocks }
 
     const previousMessage = await ctx.db.get(args.previousMessageId)
     if (previousMessage === null || previousMessage.chatId !== message.chatId) return { blocks }
     const previousBlocks = await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', previousMessage._id)).take(50)
-    const shownActivity = new Set(previousBlocks.filter((block) => block.type !== 'text').map((block) => `${block.type}:${block.toolName ?? ''}:${block.content}`))
+    const shownActivity = new Set(previousBlocks.filter((block) => block.type === 'tool_summary').map((block) => `${block.type}:${block.toolName ?? ''}:${block.content}`))
     return { blocks: blocks.filter((block) => !shownActivity.has(`${block.type}:${block.toolName ?? ''}:${block.content}`)) }
   },
 })
@@ -165,6 +208,7 @@ export const getAllForCompression = internalQuery({
     return await Promise.all(messages.map(async (message) => ({
       ...message,
       messageBlocks: (await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', message._id)).take(50))
+        .filter((block) => block.type === 'text' || block.type === 'tool_summary')
         .sort((left, right) => left.order - right.order),
     })))
   },
@@ -885,11 +929,15 @@ export const processTurn = action({
 })
 */
 
-type ToolRequest = { name: string; args: object }
-type ToolExecution = { request: ToolRequest; result: object; cardId?: Id<'cards'> }
+type ToolRequest = { name: string; args: object; id?: string; traceId?: Id<'toolTraces'> }
+type ToolExecution = { request: ToolRequest; result: Record<string, unknown>; cardId?: Id<'cards'> }
 
 function requestRecord(args: object): Record<string, unknown> {
   return args as Record<string, unknown>
+}
+
+function serialiseToolPayload(value: unknown): string {
+  return JSON.stringify(value) ?? 'null'
 }
 
 function canRunTogether(request: ToolRequest): boolean {
@@ -919,6 +967,13 @@ export const processTurn = action({
     if (!context.cacheIsFresh) await ctx.runMutation(internal.functions.messages.cacheContext, { chatId: args.chatId, cachedContext: context.leanContext, cachedContextAt: Date.now() })
     const messageId = retry?.messageId ?? await ctx.runMutation(internal.functions.messages.writeMessage, { chatId: args.chatId, userText, ecoText: '' })
     const runId = createDebugRunId(messageId, Date.now())
+    const initialDebugPayload = buildGeminiDebugPayload(context, userText)
+    await ctx.runMutation(internal.debug.events.recordReplaySnapshot, {
+      userId: context.profile._id,
+      messageId,
+      runId,
+      payload: JSON.stringify(initialDebugPayload),
+    })
     const trace = async (event: Omit<DebugEventInput, 'userId' | 'chatId' | 'messageId' | 'runId'>): Promise<void> => {
       await recordDebugEvent(ctx, { ...event, userId: context.profile._id, chatId: args.chatId, messageId, runId })
     }
@@ -940,7 +995,7 @@ export const processTurn = action({
       source: { file: 'convex/functions/messages.ts', symbol: 'getTurnContext' },
       details: serialiseDebugDetails({
         assembledContext: context,
-        finalGeminiRequest: buildGeminiDebugPayload(context, userText),
+        finalGeminiRequest: initialDebugPayload,
       }),
       durationMs: Date.now() - contextStartedAt,
       occurredAt: contextStartedAt,
@@ -953,15 +1008,49 @@ export const processTurn = action({
     let historicalExerciseDetailsFetched = false
     const historicalBlocks = new Map<string, Id<'blocks'>>()
     let completedGetDataCalls = 0
+    let lastGetDataResult: Record<string, unknown> | null = null
+    let toolTraceOrder = 0
 
-    const append = async (type: 'text' | 'tool_call' | 'tool_result', content: string, toolName?: string): Promise<void> => {
+    const append = async (type: 'text' | 'tool_summary', content: string, toolName?: string): Promise<void> => {
       await ctx.runMutation(internal.functions.messages.appendBlock, { messageId, order: blockOrder, type, content, toolName })
       blockOrder += 1
+    }
+    const beginToolTrace = async (request: ToolRequest): Promise<void> => {
+      const trace = await ctx.runMutation(internal.functions.messages.startToolTrace, {
+        messageId,
+        userId: context.profile._id,
+        order: toolTraceOrder,
+        toolName: request.name,
+        functionCallId: request.id,
+        requestJson: serialiseToolPayload(request.args),
+      })
+      toolTraceOrder += 1
+      if (typeof trace !== 'object') request.traceId = trace
+      const startSummary = toolStartSummary(request.name)
+      if (startSummary !== null) await append('tool_summary', startSummary, request.name)
+    }
+    const finishToolTrace = async (
+      execution: ToolExecution,
+      status: ToolTraceStatus,
+    ): Promise<void> => {
+      if (execution.request.traceId !== undefined) {
+        await ctx.runMutation(internal.functions.messages.completeToolTrace, {
+          traceId: execution.request.traceId,
+          resultJson: serialiseToolPayload(execution.result),
+          status,
+        })
+      }
+      await append('tool_summary', toolResultSummary({
+        toolName: execution.request.name,
+        args: execution.request.args,
+        result: execution.result,
+        status,
+      }), execution.request.name)
     }
     const execute = async (request: ToolRequest): Promise<ToolExecution> => {
       const toolName = request.name
       const requestArgs = requestRecord(request.args)
-      let result: object
+      let result: Record<string, unknown>
       let cardId: Id<'cards'> | undefined
       if (toolName === 'calculate') result = executeCalculate(request.args)
       else if (toolName === 'Get_data') {
@@ -980,6 +1069,7 @@ export const processTurn = action({
           for (const item of data.exercises ?? []) historicalBlocks.set(item.exerciseId, item.blockId as Id<'blocks'>)
           historicalExerciseDetailsFetched = historicalExerciseDetailsFetched || exerciseId !== undefined
           result = { profile: data.profile, dailySummary: data.dailySummary, exercises: (data.exercises ?? []).map((item) => exerciseId === undefined ? { exerciseId: item.exerciseId, name: item.name, date: item.date } : { exerciseId: item.exerciseId, name: item.name, date: item.date, sets: item.sets }) }
+          lastGetDataResult = result
         }
       } else if (toolName === 'search_exercise_library') {
         const rawInput = typeof requestArgs.rawInput === 'string' ? requestArgs.rawInput.trim() : ''
@@ -1058,7 +1148,7 @@ export const processTurn = action({
       title: 'Gemini call 0 started',
       summary: 'Initial turn request sent to Gemini.',
       source: { file: 'convex/lib/gemini.ts', symbol: 'beginGeminiTurn' },
-      details: serialiseDebugDetails(buildGeminiDebugPayload(context, userText)),
+      details: serialiseDebugDetails(initialDebugPayload),
       callIndex: 0,
       occurredAt: initialCallStartedAt,
       warningCodes: [],
@@ -1095,22 +1185,66 @@ export const processTurn = action({
       warningCodes: [],
     })
     tokensUsed += response.tokensUsed
+    let geminiCallIndex = 0
     for (let followUpRequests = 0; response.functionCalls.length > 0; followUpRequests += 1) {
-      const requests = response.functionCalls.map((call) => ({ name: call.name, args: call.args }))
-      if (followUpRequests >= 5) {
+      const requests: ToolRequest[] = response.functionCalls.map((call) => ({
+        name: call.name ?? '',
+        args: call.args ?? {},
+        id: call.id,
+      }))
+      if (followUpRequests >= followUpRequestLimit) {
         for (const request of requests) {
           usedTools.push(request.name)
-          await append('tool_call', JSON.stringify(request.args), request.name)
-          await append('tool_result', JSON.stringify({ error: 'This request was not executed because the turn reached its five follow-up model-request safety limit.' }), request.name)
+          await beginToolTrace(request)
+          const result = {
+            error: 'This request was not executed because the turn reached its five follow-up model-request safety limit.',
+            _ecoTurnControl: {
+              freshTurnFollowUpLimit: followUpRequestLimit,
+              completedFollowUpRequests: followUpRequestLimit,
+              remainingFollowUpRequests: 0,
+              instruction: 'The final follow-up opportunity was already used. End this turn conversationally without claiming this request ran.',
+            },
+          }
+          await finishToolTrace({ request, result }, 'rejected')
         }
-        response = { ...response, functionCalls: [], rawText: '', text: responseUnavailableText }
+        response = { ...response, functionCalls: [], rawText: '', text: followUpLimitFallback }
         break
       }
-      for (const request of requests) { usedTools.push(request.name); await append('tool_call', JSON.stringify(request.args), request.name) }
+      for (const request of requests) {
+        usedTools.push(request.name)
+        await beginToolTrace(request)
+      }
       const executions: ToolExecution[] = []
+      let redundantGetDataDetected = false
       for (let index = 0; index < requests.length;) {
         const next = requests[index]
         if (next === undefined) break
+        const nextArgs = requestRecord(next.args)
+        if (next.name === 'Get_data' && typeof nextArgs.exerciseId !== 'string') {
+          if (completedGetDataCalls > 0) {
+            const result = { error: 'Get_data profile, date-range, and daily-summary lookups must be combined into the first general lookup of the turn.' }
+            executions.push({ request: next, result })
+            redundantGetDataDetected = true
+            await trace({
+              kind: 'warning',
+              status: 'warning',
+              title: 'Redundant Get_data call stopped',
+              summary: 'Gemini attempted another general Get_data lookup after the turn had already completed one.',
+              source: { file: 'convex/functions/messages.ts', symbol: 'processTurn' },
+              details: serialiseDebugDetails({
+                arguments: next.args,
+                completedGetDataCalls,
+                lastGetDataResult,
+              }),
+              callIndex: geminiCallIndex,
+              toolName: next.name,
+              warningCodes: [DEBUG_WARNING.redundantDataLookup],
+            })
+            index += 1
+            continue
+          }
+          completedGetDataCalls += 1
+        }
         if (!canRunTogether(next)) { executions.push(await execute(next)); index += 1; continue }
         const group: ToolRequest[] = []
         while (index < requests.length) {
@@ -1121,16 +1255,65 @@ export const processTurn = action({
         }
         executions.push(...await Promise.all(group.map(execute)))
       }
-      for (const execution of executions) {
+      const completedFollowUpRequests = followUpRequests + 1
+      const controlledExecutions = executions.map((execution) => ({
+        ...execution,
+        result: withTurnControl(execution.result, completedFollowUpRequests),
+      }))
+      for (const execution of controlledExecutions) {
         if (execution.cardId !== undefined) lastCardId = execution.cardId
-        await append('tool_result', JSON.stringify(execution.result), execution.request.name)
+        await finishToolTrace(execution, 'completed')
         await trace({ kind: 'tool', status: toolResultHasError(execution.result) ? 'error' : 'success', title: `${execution.request.name} executed`, summary: toolResultHasError(execution.result) ? 'The tool returned a recoverable error for Gemini.' : 'The tool returned a result for Gemini.', source: { file: 'convex/functions/messages.ts', symbol: 'processTurn' }, details: serialiseDebugDetails({ arguments: execution.request.args, result: execution.result }), toolName: execution.request.name, warningCodes: toolResultHasError(execution.result) ? [DEBUG_WARNING.toolResultError] : [] })
       }
-      try { response = await continueGeminiTurn(geminiTurn.chat, executions.map(({ request, result }) => ({ name: request.name, response: result }))) } catch (error) {
+      if (redundantGetDataDetected) {
+        const fallbackContext = lastGetDataResult ?? { profile: { name: context.leanContext.name } }
+        response = { ...response, functionCalls: [], rawText: '', text: dataLookupFallback(fallbackContext) }
+        break
+      }
+      const toolResponses = controlledExecutions.map(({ request, result }) => ({ name: request.name, response: result, id: request.id }))
+      geminiCallIndex += 1
+      const continuationStartedAt = Date.now()
+      await trace({
+        kind: 'gemini',
+        status: 'running',
+        title: `Gemini call ${geminiCallIndex} started`,
+        summary: 'Returning tool results to Gemini.',
+        source: { file: 'convex/lib/gemini.ts', symbol: 'continueGeminiTurn' },
+        details: serialiseDebugDetails({ functionResponses: toolResponses }),
+        callIndex: geminiCallIndex,
+        occurredAt: continuationStartedAt,
+        warningCodes: [],
+      })
+      try { response = await continueGeminiTurn(geminiTurn.chat, toolResponses) } catch (error) {
+        await trace({
+          kind: 'error',
+          status: 'error',
+          title: `Gemini call ${geminiCallIndex} failed`,
+          summary: errorMessage(error),
+          source: { file: 'convex/lib/gemini.ts', symbol: 'continueGeminiTurn' },
+          details: serialiseDebugError(error),
+          callIndex: geminiCallIndex,
+          durationMs: Date.now() - continuationStartedAt,
+          warningCodes: [],
+        })
         await ctx.runMutation(internal.functions.apiUsage.logUsage, { userId: context.profile._id, tokensUsed, timestamp: Date.now() })
         await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: responseUnavailableText, usedTools })
         return { ecoText: '', error: `${responseUnavailableText} ${errorMessage(error)}` }
       }
+      await trace({
+        kind: 'gemini',
+        status: 'success',
+        title: `Gemini call ${geminiCallIndex} completed`,
+        summary: response.functionCalls.length === 0
+          ? 'Gemini returned a text response.'
+          : `Gemini returned ${response.functionCalls.length} function request${response.functionCalls.length === 1 ? '' : 's'}.`,
+        source: { file: 'convex/lib/gemini.ts', symbol: 'continueGeminiTurn' },
+        details: responseDetails(response),
+        callIndex: geminiCallIndex,
+        durationMs: Date.now() - continuationStartedAt,
+        tokens: response.usage,
+        warningCodes: [],
+      })
       tokensUsed += response.tokensUsed
     }
     await ctx.runMutation(internal.functions.apiUsage.logUsage, { userId: context.profile._id, tokensUsed, timestamp: Date.now() })

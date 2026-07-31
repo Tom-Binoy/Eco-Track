@@ -5,7 +5,7 @@
 **Audience:** Codex (code generation) + solo dev
 **Tech stack:** React Native (Expo) + Convex (DB/functions/auth) + Convex Auth (Google OAuth) + Gemini API + TypeScript strict
 **Schema authority:** `Final-Schema.txt` — includes the lean
-`chats.cachedContext`, `messages.usedTools`, `messageBlocks`, `guideInvocations`,
+`chats.cachedContext`, `messages.usedTools`, `messageBlocks`, `toolTraces`, `guideInvocations`,
 `exerciseLibrary`, its separate embedding tables, `userExerciseAliases`,
 `exercises.exerciseId`, and
 `cards.correctsBlockId` in addition to the established chat and memory fields.
@@ -105,9 +105,10 @@ actions/runTurn.ts [action]
       - fresh lean cached context, otherwise workoutContext plus the small
         tone/unit/active-injury bundle
       - recent messages (always fresh)
-      - ordered messageBlocks for those raw messages; every persisted text,
-        tool-call, and tool-result trace is included, even after an invalid or
-        failed tool result. apiUsage is never part of prompt context.
+      - ordered messageBlocks for those raw messages; persisted text and
+        tool-summary notes are included, including safe failed-call outcomes.
+        Raw tool payloads remain in internal `toolTraces`; apiUsage is never
+        part of prompt context.
       - sessionSummaries if raw messages exceed token threshold
       - cards where inDiscussion=true — pinned and injected,
         labeled "Card 1" / "Card 2" by stack position (ephemeral, request-scoped only)
@@ -148,7 +149,7 @@ actions/runTurn.ts [action]
       validation. Historical corrections carry
       `correctsBlockId` and are also re-confirmed.
    5. The Eco message row is created at processing start; its final text and
-      ordered messageBlocks are updated reactively as the turn proceeds.
+      ordered text/tool-summary messageBlocks are updated reactively as the turn proceeds.
 ```
 
 **Client-side half (the piece explicitly left open until this session):**
@@ -226,8 +227,9 @@ This section is the Turn Lifecycle Spec, wired into files rather than re-derived
   assembly, Call 1 with five always-available tools and the two guide-active
   tools, batched independent read-only work, ordered dependent exercise search,
   naming guidance, and custom creation, block-level identity resolution before card creation,
-  reactive trace writes to `messageBlocks`,
-  and reinjection of those ordered blocks on later main turns. Gemini runs only
+  reactive tool-summary writes to `messageBlocks`, private raw writes to
+  `toolTraces`, and reinjection of the ordered text/note history on later main
+  turns. Gemini runs only
   in this Convex action layer. `apiUsage` and `guideInvocations` remain excluded
   from model context. Each executed `get_new_exercise_guidance` call writes one
   backend-only `guideInvocations` record after execution; it is a safety/tuning
@@ -250,7 +252,7 @@ This section is the Turn Lifecycle Spec, wired into files rather than re-derived
 - **Compression and reflection triggers** (§7): `sessionSummaries` compression
   is size/token-threshold-based (not count or time), is scheduled non-blocking
   only after a Gemini-completed message (never mid-tool loop), and gives Tier 1
-  the ordered `messageBlocks` for its source messages. Tier 2 waits for six
+  the ordered text/tool-summary `messageBlocks` for its source messages. Tier 2 waits for six
   Tier 1 rows and compacts exactly the five oldest;
   both tiers retain material tool outcomes but exclude `apiUsage`. Daily cleanup
   runs from one hourly cron, bucketed by `profiles.timezone`; it uses one Gemini
