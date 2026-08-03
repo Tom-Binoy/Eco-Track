@@ -36,7 +36,7 @@ export const getDataForTurn = internalQuery({
       for (const block of blocks) {
         if (block.userId !== args.userId) continue
         const blockExercises = await ctx.db.query('exercises').withIndex('by_block', (q) => q.eq('blockId', block._id)).order('asc').take(50)
-        for (const exercise of blockExercises) exercises.push({ exerciseId: `Exercise ${exercises.length + 1}`, name: exercise.name, date: session.date, blockId: block._id, sets: exercise.sets })
+        for (const exercise of blockExercises) exercises.push({ exerciseId: `History Exercise ${exercises.length + 1}`, name: exercise.name, date: session.date, blockId: block._id, sets: exercise.sets })
       }
     }
     if (args.exerciseId === undefined) return { profile: profileData, exercises, dailySummary: dailySummaryForTurn }

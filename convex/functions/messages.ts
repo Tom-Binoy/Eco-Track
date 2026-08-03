@@ -1,4 +1,5 @@
 import { getAuthUserId } from '@convex-dev/auth/server'
+import { makeFunctionReference } from 'convex/server'
 import { v } from 'convex/values'
 
 import { internal } from '../_generated/api'
@@ -29,6 +30,16 @@ const followUpLimitFallback = 'Let’s pause there for now. What would you like 
 type TurnContext = GeminiContext & { chat: Doc<'chats'>; cacheIsFresh: boolean }
 type TurnResult = { ecoText: string; cardId?: Id<'cards'>; error?: string }
 type CachedContext = LeanContext
+type LiveRuntimeConfig = { workflow: 'chat'; modelId: string; systemPrompt: string; poolIds: Id<'debugLiveGeminiPools'>[]; cacheEnabled: boolean; cacheTtlSeconds: number; source: 'default' | 'published'; configId?: string }
+const getLiveRuntimeConfig = makeFunctionReference<'query', Record<string, never>, LiveRuntimeConfig>('debug/liveGemini:getActiveForTurn')
+const reserveLiveGemini = makeFunctionReference<'mutation', { workflow: 'chat'; modelId: string; poolIds: Id<'debugLiveGeminiPools'>[]; requestCount: number }, { apiKey?: string; reservationId?: Id<'debugLiveGeminiReservations'>; error?: string }>('debug/liveGemini:reserve')
+const releaseLiveGemini = makeFunctionReference<'mutation', { reservationId: Id<'debugLiveGeminiReservations'>; usedRequests: number; totalTokens: number }, null>('debug/liveGemini:releaseReservation')
+
+function compressionSafeToolBlock(block: Doc<'messageBlocks'>): Doc<'messageBlocks'> {
+  return block.toolName === 'search_exercise_library'
+    ? { ...block, content: block.content.replace(/Library Exercise \d+ — ([^—;\n]+)(?: — [^;\n]+)?/g, '$1') }
+    : block
+}
 
 function leanContext(profile: Doc<'profiles'>, workoutContext: Doc<'workoutContext'> | null): LeanContext {
   return { name: profile.name, tonePreference: profile.tonePreference, weightUnit: profile.weightUnit, distanceUnit: profile.distanceUnit, activeInjuries: profile.injuries.filter((injury) => injury.status !== 'resolved'), workoutContext: workoutContext?.content ?? null }
@@ -176,6 +187,108 @@ export const completeToolTrace = internalMutation({
     return null
   },
 })
+
+type LibraryReferenceEntry = {
+  exerciseLibraryId: Id<'exerciseLibrary'>
+  canonicalName: string
+  description: string | null
+}
+
+function libraryLabel(number: number): string {
+  return `Library Exercise ${number}`
+}
+
+function libraryLabelNumber(label: string): number | null {
+  const match = /^Library Exercise (\d+)$/.exec(label)
+  const value = match === null ? NaN : Number(match[1])
+  return Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
+export const createLibraryReferences = internalMutation({
+  args: {
+    chatId: v.id('chats'), userId: v.id('profiles'), messageId: v.id('messages'),
+    entries: v.array(v.object({ exerciseLibraryId: v.id('exerciseLibrary'), canonicalName: v.string(), description: v.union(v.string(), v.null()) })),
+  },
+  handler: async (ctx, args): Promise<Array<LibraryReferenceEntry & { label: string }>> => {
+    const chat = await ctx.db.get(args.chatId)
+    const message = await ctx.db.get(args.messageId)
+    if (chat === null || message === null || chat.userId !== args.userId || message.chatId !== chat._id) return []
+    const existing = await ctx.db.query('exerciseSearchReferences').withIndex('by_user_and_chat', (q) => q.eq('userId', args.userId).eq('chatId', args.chatId)).collect()
+    const byExercise = new Map<Id<'exerciseLibrary'>, { label: string }>(existing.map((entry) => [entry.exerciseLibraryId, { label: entry.label }]))
+    let nextNumber = existing.reduce((maximum, entry) => Math.max(maximum, libraryLabelNumber(entry.label) ?? 0), 0) + 1
+    const resolved: Array<LibraryReferenceEntry & { label: string }> = []
+    for (const entry of args.entries) {
+      const known = byExercise.get(entry.exerciseLibraryId)
+      if (known !== undefined) {
+        resolved.push({ ...entry, label: known.label })
+        continue
+      }
+      const label = libraryLabel(nextNumber)
+      nextNumber += 1
+      await ctx.db.insert('exerciseSearchReferences', {
+        chatId: args.chatId, userId: args.userId, messageId: args.messageId,
+        exerciseLibraryId: entry.exerciseLibraryId, label, canonicalName: entry.canonicalName,
+        ...(entry.description === null ? {} : { description: entry.description }), createdAt: Date.now(),
+      })
+      byExercise.set(entry.exerciseLibraryId, { label })
+      resolved.push({ ...entry, label })
+    }
+    return resolved
+  },
+})
+
+export const resolveLibraryReferences = internalQuery({
+  args: { chatId: v.id('chats'), userId: v.id('profiles'), labels: v.array(v.string()) },
+  handler: async (ctx, args): Promise<Array<{ label: string; exerciseLibraryId: Id<'exerciseLibrary'> }>> => {
+    const chat = await ctx.db.get(args.chatId)
+    if (chat === null || chat.userId !== args.userId) return []
+    const [references, messages] = await Promise.all([
+      ctx.db.query('exerciseSearchReferences').withIndex('by_user_and_chat', (q) => q.eq('userId', args.userId).eq('chatId', args.chatId)).collect(),
+      ctx.db.query('messages').withIndex('by_chat', (q) => q.eq('chatId', args.chatId)).order('desc').take(50),
+    ])
+    const messageIndex = new Map(messages.map((message, index) => [message._id, index]))
+    const requested = new Set(args.labels)
+    return references.flatMap((reference) => {
+      const age = messageIndex.get(reference.messageId)
+      return requested.has(reference.label) && age !== undefined && age <= 3
+        ? [{ label: reference.label, exerciseLibraryId: reference.exerciseLibraryId }]
+        : []
+    })
+  },
+})
+
+export const purgeLibraryReferencesForChat = internalMutation({
+  args: { chatId: v.id('chats'), userId: v.id('profiles') },
+  handler: async (ctx, args): Promise<number> => {
+    const chat = await ctx.db.get(args.chatId)
+    if (chat === null || chat.userId !== args.userId) return 0
+    const references = await ctx.db
+      .query('exerciseSearchReferences')
+      .withIndex('by_user_and_chat', (q) => q.eq('userId', args.userId).eq('chatId', args.chatId))
+      .collect()
+    for (const reference of references) await ctx.db.delete(reference._id)
+    return references.length
+  },
+})
+
+export const purgeExpiredLibraryReferences = internalMutation({
+  args: { chatId: v.id('chats'), userId: v.id('profiles') },
+  handler: async (ctx, args): Promise<number> => {
+    const chat = await ctx.db.get(args.chatId)
+    if (chat === null || chat.userId !== args.userId) return 0
+    const [references, messages] = await Promise.all([
+      ctx.db.query('exerciseSearchReferences').withIndex('by_user_and_chat', (q) => q.eq('userId', args.userId).eq('chatId', args.chatId)).collect(),
+      ctx.db.query('messages').withIndex('by_chat', (q) => q.eq('chatId', args.chatId)).order('desc').take(50),
+    ])
+    const messageIndex = new Map(messages.map((message, index) => [message._id, index]))
+    const expired = references.filter((reference) => {
+      const age = messageIndex.get(reference.messageId)
+      return age === undefined || age > 3
+    })
+    for (const reference of expired) await ctx.db.delete(reference._id)
+    return expired.length
+  },
+})
 export const getBlocks = query({
   args: { messageId: v.id('messages'), previousMessageId: v.optional(v.id('messages')) },
   handler: async (ctx, args) => {
@@ -209,6 +322,7 @@ export const getAllForCompression = internalQuery({
       ...message,
       messageBlocks: (await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', message._id)).take(50))
         .filter((block) => block.type === 'text' || block.type === 'tool_summary')
+        .map(compressionSafeToolBlock)
         .sort((left, right) => left.order - right.order),
     })))
   },
@@ -944,6 +1058,42 @@ function canRunTogether(request: ToolRequest): boolean {
   return ['search_exercise_library', 'calculate'].includes(request.name)
 }
 
+function libraryExerciseLabels(args: object): string[] {
+  const value = requestRecord(args)
+  const blocks = Array.isArray(value.blocks) ? value.blocks : []
+  return blocks.flatMap((block) => {
+    const blockValue = typeof block === 'object' && block !== null ? block as Record<string, unknown> : null
+    const exercises = blockValue === null || !Array.isArray(blockValue.exercises) ? [] : blockValue.exercises
+    return exercises.flatMap((exercise) => {
+      const entry = typeof exercise === 'object' && exercise !== null ? exercise as Record<string, unknown> : null
+      return entry !== null && typeof entry.exerciseId === 'string' && entry.exerciseId.startsWith('Library Exercise ')
+        ? [entry.exerciseId]
+        : []
+    })
+  })
+}
+
+function replaceLibraryExerciseLabels(args: object, resolved: Map<string, Id<'exerciseLibrary'>>): object {
+  const value = requestRecord(args)
+  const blocks = Array.isArray(value.blocks) ? value.blocks : []
+  return {
+    ...value,
+    blocks: blocks.map((block) => {
+      const blockValue = typeof block === 'object' && block !== null ? block as Record<string, unknown> : {}
+      const exercises = Array.isArray(blockValue.exercises) ? blockValue.exercises : []
+      return {
+        ...blockValue,
+        exercises: exercises.map((exercise) => {
+          const entry = typeof exercise === 'object' && exercise !== null ? exercise as Record<string, unknown> : {}
+          const label = typeof entry.exerciseId === 'string' ? entry.exerciseId : ''
+          const exerciseId = resolved.get(label)
+          return exerciseId === undefined ? entry : { ...entry, exerciseId }
+        }),
+      }
+    }),
+  }
+}
+
 export const processTurn = action({
   args: { chatId: v.id('chats'), userText: v.optional(v.string()), retryMessageId: v.optional(v.id('messages')) },
   handler: async (ctx, args): Promise<TurnResult> => {
@@ -956,6 +1106,19 @@ export const processTurn = action({
     if (retry !== null && 'error' in retry) return { ecoText: '', error: retry.error }
     const userText = retry === null ? args.userText?.trim() : retry.userText
     if (userText === undefined || userText.length === 0) return { ecoText: '', error: 'A message is required' }
+    // Snapshot once per turn. A later admin publication cannot change an
+    // already-running chat or its tool continuations.
+    const runtimeConfig = await ctx.runQuery(getLiveRuntimeConfig, {})
+    // Reserve admission for the initial request only. Low-RPM Flash pools can
+    // therefore accept a new chat turn and fail over to the next key once full.
+    // The selected key remains pinned for this turn's SDK chat/tool loop.
+    const liveReservation = await ctx.runMutation(reserveLiveGemini, { workflow: 'chat', modelId: runtimeConfig.modelId, poolIds: runtimeConfig.poolIds, requestCount: 1 })
+    if (liveReservation.apiKey === undefined) return { ecoText: '', error: responseUnavailableText }
+    const modelRuntimeConfig = { ...runtimeConfig, apiKey: liveReservation.apiKey }
+    let reservedRequestsUsed = 0
+    const releaseLiveReservation = async (tokens: number): Promise<void> => {
+      if (liveReservation.reservationId !== undefined) await ctx.runMutation(releaseLiveGemini, { reservationId: liveReservation.reservationId, usedRequests: reservedRequestsUsed, totalTokens: tokens })
+    }
 
     const contextStartedAt = Date.now()
     const context = await ctx.runQuery(internal.functions.messages.getTurnContext, {
@@ -966,8 +1129,9 @@ export const processTurn = action({
     if ('error' in context) return { ecoText: '', error: context.error }
     if (!context.cacheIsFresh) await ctx.runMutation(internal.functions.messages.cacheContext, { chatId: args.chatId, cachedContext: context.leanContext, cachedContextAt: Date.now() })
     const messageId = retry?.messageId ?? await ctx.runMutation(internal.functions.messages.writeMessage, { chatId: args.chatId, userText, ecoText: '' })
+    await ctx.runMutation(internal.functions.messages.purgeExpiredLibraryReferences, { chatId: args.chatId, userId: context.profile._id })
     const runId = createDebugRunId(messageId, Date.now())
-    const initialDebugPayload = buildGeminiDebugPayload(context, userText)
+    const initialDebugPayload = buildGeminiDebugPayload(context, userText, modelRuntimeConfig)
     await ctx.runMutation(internal.debug.events.recordReplaySnapshot, {
       userId: context.profile._id,
       messageId,
@@ -1072,19 +1236,34 @@ export const processTurn = action({
           lastGetDataResult = result
         }
       } else if (toolName === 'search_exercise_library') {
-        const rawInput = typeof requestArgs.rawInput === 'string' ? requestArgs.rawInput.trim() : ''
-        if (rawInput.length === 0) result = { error: 'search_exercise_library requires one concrete exercise name.' }
+        const rawQueries = Array.isArray(requestArgs.queries)
+          ? requestArgs.queries
+          : []
+        const queries = rawQueries
+          .filter((query): query is string => typeof query === 'string').map((query) => query.trim()).filter((query) => query.length > 0)
+        if (rawQueries.length > 5 || queries.length === 0 || queries.length > 5) result = { error: 'search_exercise_library requires one to five concrete exercise names.' }
         else {
-          const search: { autoResolved: { exerciseId: Id<'exerciseLibrary'>; canonicalName: string; score: number } | null; candidates: Array<{ _id: Id<'exerciseLibrary'>; canonicalName: string; description: string | null; score: number }> } = await ctx.runAction(internal.functions.exerciseLibrary.searchForTurn, { userId: context.profile._id, rawInput })
-          result = { rawInput, autoResolved: search.autoResolved, candidates: search.candidates.map((candidate) => ({ exerciseId: candidate._id, canonicalName: candidate.canonicalName, description: candidate.description, score: candidate.score })) }
-          if (search.autoResolved === null && !usedTools.includes(guideMarker)) usedTools.push(guideMarker)
+          const searches: Array<{ autoResolved: { exerciseId: Id<'exerciseLibrary'>; canonicalName: string; description: string | null; score: number } | null; candidates: Array<{ _id: Id<'exerciseLibrary'>; canonicalName: string; description: string | null; score: number }> }> = await Promise.all(queries.map((rawInput) => ctx.runAction(internal.functions.exerciseLibrary.searchForTurn, { userId: context.profile._id, rawInput })))
+          const entries: LibraryReferenceEntry[] = searches.flatMap((search) => [
+            ...(search.autoResolved === null ? [] : [{ exerciseLibraryId: search.autoResolved.exerciseId, canonicalName: search.autoResolved.canonicalName, description: search.autoResolved.description }]),
+            ...search.candidates.map((candidate) => ({ exerciseLibraryId: candidate._id, canonicalName: candidate.canonicalName, description: candidate.description })),
+          ])
+          const references = await ctx.runMutation(internal.functions.messages.createLibraryReferences, { chatId: args.chatId, userId: context.profile._id, messageId, entries })
+          const labels = new Map(references.map((reference) => [reference.exerciseLibraryId, reference.label]))
+          result = { searches: searches.map((search, index) => ({
+            query: queries[index],
+            autoResolved: search.autoResolved === null ? null : { exerciseId: labels.get(search.autoResolved.exerciseId) ?? '', canonicalName: search.autoResolved.canonicalName, description: search.autoResolved.description, score: search.autoResolved.score },
+            candidates: search.candidates.map((candidate) => ({ exerciseId: labels.get(candidate._id) ?? '', canonicalName: candidate.canonicalName, description: candidate.description, score: candidate.score })),
+          })) }
+          if (searches.some((search) => search.autoResolved === null) && !usedTools.includes(guideMarker)) usedTools.push(guideMarker)
         }
       } else if (toolName === 'get_new_exercise_guidance') {
         const parsed = newExerciseGuidanceInputSchema.safeParse(request.args)
         if (!parsed.success) result = { error: 'get_new_exercise_guidance needs a concrete raw phrase and the exact candidate list returned by search_exercise_library.' }
         else {
           try {
-            const guidance = await getNewExerciseGuidance(parsed.data, context.leanContext.activeInjuries)
+            const guidance = await getNewExerciseGuidance(parsed.data, context.leanContext.activeInjuries, modelRuntimeConfig.modelId, modelRuntimeConfig.apiKey)
+            reservedRequestsUsed += 1
             tokensUsed += guidance.usage.total
             result = { ...guidance.output, exerciseNamingGuidance: EXERCISE_NAMING_GUIDANCE }
             await ctx.runMutation(internal.functions.exerciseLibrary.recordGuideInvocation, { userId: context.profile._id, messageId })
@@ -1096,9 +1275,23 @@ export const processTurn = action({
         }
       } else if (toolName === 'create_custom_exercise') {
         const parsed = createCustomExerciseSchema.safeParse(request.args)
-        result = parsed.success
-          ? await ctx.runAction(internal.functions.exerciseLibrary.createCustomExerciseAction, { userId: context.profile._id, messageId, input: parsed.data })
-          : { error: 'Custom exercise details are invalid. Provide a name and a concrete description.' }
+        if (!parsed.success) result = { error: 'Custom exercise details are invalid. Provide a name and a concrete description.' }
+        else {
+          const created = await ctx.runAction(internal.functions.exerciseLibrary.createCustomExerciseAction, { userId: context.profile._id, messageId, input: parsed.data })
+          if (created.exerciseId === undefined) result = { error: created.error ?? 'Could not create the custom exercise.' }
+          else {
+            const references = await ctx.runMutation(internal.functions.messages.createLibraryReferences, {
+              chatId: args.chatId,
+              userId: context.profile._id,
+              messageId,
+              entries: [{ exerciseLibraryId: created.exerciseId, canonicalName: parsed.data.name, description: parsed.data.description }],
+            })
+            const reference = references[0]
+            result = reference === undefined
+              ? { error: 'Could not create a reference for the custom exercise.' }
+              : { exerciseId: reference.label, canonicalName: reference.canonicalName, description: reference.description }
+          }
+        }
       } else if (toolName === 'Correct_log') {
         const correction = requestArgs
         const validation = 'parsedData' in correction ? validateToolCall(correction.parsedData) : { isValid: false as const, parsedData: {}, issues: [{ code: 'missing_parsed_data', message: 'Correct_log did not include parsedData.', path: 'parsedData' }] }
@@ -1121,7 +1314,13 @@ export const processTurn = action({
           cardId = 'cardId' in result ? result.cardId as Id<'cards'> : undefined
         } else result = { error: 'Correct_log needs a valid active Card label, or a historical Exercise label whose full details were returned by Get_data earlier in this turn.' }
       } else if (toolName === 'log_workout') {
-        const validation = validateToolCall(request.args)
+        const labels = libraryExerciseLabels(request.args)
+        const references = await ctx.runQuery(internal.functions.messages.resolveLibraryReferences, { chatId: args.chatId, userId: context.profile._id, labels })
+        const resolved = new Map(references.map((reference) => [reference.label, reference.exerciseLibraryId]))
+        const missingLabels = labels.filter((label) => !resolved.has(label))
+        const validation = missingLabels.length > 0
+          ? { isValid: false as const, parsedData: {}, issues: missingLabels.map((label) => ({ code: 'expired_library_reference', message: `${label} is no longer available. Search the exercise library again before logging.`, path: 'blocks.exercises.exerciseId' })) }
+          : validateToolCall(replaceLibraryExerciseLabels(request.args, resolved))
         if (!validation.isValid) result = { error: 'log_workout validation failed. Correct the payload and resolve every exercise before retrying.', validationIssues: validation.issues }
         else {
           const writes: object[] = []
@@ -1154,7 +1353,7 @@ export const processTurn = action({
       warningCodes: [],
     })
     let geminiTurn
-    try { geminiTurn = await beginGeminiTurn(context, userText) } catch (error) {
+    try { geminiTurn = await beginGeminiTurn(context, userText, modelRuntimeConfig); reservedRequestsUsed += 1 } catch (error) {
       await trace({
         kind: 'error',
         status: 'error',
@@ -1167,6 +1366,7 @@ export const processTurn = action({
         warningCodes: [],
       })
       await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: responseUnavailableText })
+      await releaseLiveReservation(tokensUsed)
       return { ecoText: '', error: `${responseUnavailableText} ${errorMessage(error)}` }
     }
     let response = geminiTurn.response
@@ -1284,7 +1484,7 @@ export const processTurn = action({
         occurredAt: continuationStartedAt,
         warningCodes: [],
       })
-      try { response = await continueGeminiTurn(geminiTurn.chat, toolResponses) } catch (error) {
+      try { response = await continueGeminiTurn(geminiTurn.chat, toolResponses); reservedRequestsUsed += 1 } catch (error) {
         await trace({
           kind: 'error',
           status: 'error',
@@ -1298,6 +1498,7 @@ export const processTurn = action({
         })
         await ctx.runMutation(internal.functions.apiUsage.logUsage, { userId: context.profile._id, tokensUsed, timestamp: Date.now() })
         await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: responseUnavailableText, usedTools })
+        await releaseLiveReservation(tokensUsed)
         return { ecoText: '', error: `${responseUnavailableText} ${errorMessage(error)}` }
       }
       await trace({
@@ -1317,6 +1518,7 @@ export const processTurn = action({
       tokensUsed += response.tokensUsed
     }
     await ctx.runMutation(internal.functions.apiUsage.logUsage, { userId: context.profile._id, tokensUsed, timestamp: Date.now() })
+    await releaseLiveReservation(tokensUsed)
     await append('text', response.text)
     await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: response.text, usedTools: usedTools.length === 0 ? undefined : usedTools, isFinalGeminiResponse: true })
     return { ecoText: response.text, cardId: lastCardId }

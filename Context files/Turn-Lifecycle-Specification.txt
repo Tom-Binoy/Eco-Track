@@ -116,8 +116,8 @@ optional string metadata (`category`, `equipment`, `muscleGroup`), optional
 `exerciseLibrary` row only (`userId` is always the calling user, never global),
 sets `source: "custom"`, builds `searchBlob` with the shared name/aliases/
 description helper, immediately writes its `RETRIEVAL_DOCUMENT` embedding, and
-returns the new `exerciseId`. Its aliases seed `exerciseLibrary.aliases` only;
-it never writes `userExerciseAliases`. Eco must receive that `exerciseId`
+returns a new `Library Exercise N` label while retaining the library ID internally. Its aliases seed `exerciseLibrary.aliases` only;
+it never writes `userExerciseAliases`. Eco must receive that label
 before calling `log_workout` in the same turn; these dependent tool requests
 remain ordered within the five-follow-up model-request cap. Before invoking it, Eco must have
 established through the guide conversation that the user consents to keeping
@@ -135,18 +135,18 @@ field: the supplied optional arguments determine what is read. Its contract is:
   `{ date, content }`, or `null` if no summary exists.
 - `dateRange`: an optional `{ startDate, endDate }` range for historical
   workout lookup. The first call returns chronologically ordered, ephemeral
-  `Exercise 1`, `Exercise 2`, etc. labels.
+  `History Exercise 1`, `History Exercise 2`, etc. labels.
 - `exerciseId`: optional and only meaningful with `dateRange`; it must be one
-  of the returned `Exercise N` labels and returns that exercise's details.
+  of the returned `History Exercise N` labels and returns that exercise's details.
 
 The tool result always has `profile`, `dailySummary`, and `exercises` keys.
-`Correct_log` may target a pinned card, or a historical `Exercise N` only after
+`Correct_log` may target a pinned card, or a historical `History Exercise N` only after
 that `Get_data` flow has returned it. Any of these read requests may be
 combined in one call, but Eco must not request data speculatively.
 
 At most one general `Get_data` request runs in a turn. A general request is one
 for profile fields, a daily summary, or a date range; it must batch every needed
-general read. The sole permitted later lookup is `exerciseId: "Exercise N"`
+general read. The sole permitted later lookup is `exerciseId: "History Exercise N"`
 after that turn's date-range response. If Gemini requests another general
 lookup, persist its raw rejected request/result in internal `toolTraces`, write
 a safe rejection summary in `messageBlocks`, and record a `redundant_data_lookup`
@@ -220,7 +220,7 @@ is no generic-phrase field or generic-phrase card path. A validation failure
 also produces a conversational clarification instead of a card. A resolved
 block carries canonical `exerciseId` values. `create_custom_exercise` is the
 deliberate exception to confirmation-only library creation and supplies its
-new personal `exerciseId` before `log_workout`.
+new personal `Library Exercise N` label before `log_workout`.
 
 ## 4. Write Branch
 
@@ -246,7 +246,11 @@ new personal `exerciseId` before `log_workout`.
    and separate personal/global library vectors in that order. The one
    `RETRIEVAL_QUERY` embedding is reused for both library searches; each vector
    search takes five hits, personal wins an exact score tie, and 0.82 is the
-   auto-resolution threshold. Below threshold it returns up to five ranked
+   auto-resolution threshold. It accepts up to five queries per request and
+   returns only `Library Exercise N` labels, canonical names, descriptions, and
+   scores; raw library IDs remain in chat-scoped `exerciseSearchReferences`.
+   Labels resolve for the search turn plus three later user turns, then their
+   references are deleted and a fresh search is required. Below threshold it returns up to five ranked
    near-misses for Eco to handle conversationally. Generic wording
    never reaches this branch because Eco asks for a concrete name instead.
    Immediately after each executed `get_new_exercise_guidance` call, write one

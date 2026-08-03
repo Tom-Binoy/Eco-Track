@@ -1,5 +1,37 @@
 # Eco Debug Console
 
+## Model evaluations
+
+The separate **Model evaluations** screen runs synthetic, versioned Gemini
+fixtures. It never reads or writes product chats, workouts, cards, memory, or
+`apiUsage`. It is protected by the same development-only debug-admin gate as
+turn diagnostics.
+
+Evaluation keys are server-only. Set `GEMINI_EVALUATION_KEYS_JSON` on the
+Convex development deployment to a JSON object of aliases and keys, for
+example `{"eco-development":"...","prototype-project":"..."}`. The UI
+can select only aliases; it never receives key values. When this variable is
+absent, the existing `GEMINI_API_KEY` is available only as `eco-development`.
+
+Gemini quotas are per Cloud project, not per key. Configure one quota pool per
+project, attach its model-specific RPM/RPD limits, and use multiple pools only
+when their keys are associated with separate projects.
+
+## Live Gemini controls
+
+The separate **Live Gemini Controls** screen is for development-only manual
+testing. Approved debug admins can save a complete main Eco system prompt and
+model ID as a draft, then type-confirm publication. A published version affects
+new chat turns and exercise-name guidance only; daily cleanup and compression
+continue to use the code default. Each turn snapshots the selected version at
+its start, so publishing does not alter an in-progress turn.
+
+Published versions are immutable. The history allows an approved admin to
+type-confirm rollback to any prior version. Until the first version is
+published, the code defaults (`GEMINI_MODEL` and `ECO_SYSTEM_PROMPT`) remain in
+use. The screen never exposes API keys, quota aliases, tool schemas, product
+data, or the separate guidance/memory prompts.
+
 Development-only React website for inspecting Eco Track turns in strict event
 order. It is intentionally separate from the Expo interface and runs only on
 localhost.

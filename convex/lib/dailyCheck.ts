@@ -31,9 +31,10 @@ export type DailyCleanupResult = {
 }
 
 type GeminiTextResult = { content: string; tokensUsed: number }
+export type BackgroundGeminiRuntime = { modelId: string; systemPrompt: string; apiKey?: string; cachedContent?: string }
 
-function getClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY
+function getClient(apiKeyOverride?: string): GoogleGenAI {
+  const apiKey = apiKeyOverride ?? process.env.GEMINI_API_KEY
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is not configured')
   }
@@ -44,11 +45,12 @@ function getClient(): GoogleGenAI {
 async function generateContent(
   contents: string,
   config?: GenerateContentConfig,
+  runtime?: BackgroundGeminiRuntime,
 ): Promise<GenerateContentResponse> {
-  return await getClient().models.generateContent({
-    model: GEMINI_MODEL,
+  return await getClient(runtime?.apiKey).models.generateContent({
+    model: runtime?.modelId ?? GEMINI_MODEL,
     contents,
-    config: { httpOptions: { timeout: 30_000 }, ...config },
+    config: { httpOptions: { timeout: 30_000 }, ...(runtime?.cachedContent === undefined ? {} : { cachedContent: runtime.cachedContent }), ...config },
   })
 }
 
@@ -73,32 +75,36 @@ function getTokensUsed(result: GenerateContentResponse): number {
   return result.usageMetadata?.totalTokenCount ?? 0
 }
 
-export async function summariseMessages(messages: CompressionMessage[]): Promise<GeminiTextResult> {
-  const result = await generateContent(buildChatCompressionPrompt(transcript(messages)))
+export async function summariseMessages(messages: CompressionMessage[], runtime?: BackgroundGeminiRuntime): Promise<GeminiTextResult> {
+  const content = runtime === undefined ? buildChatCompressionPrompt(transcript(messages)) : `${runtime.cachedContent === undefined ? `${runtime.systemPrompt}\n\n` : ''}<conversation>\n${transcript(messages)}\n</conversation>`
+  const result = await generateContent(content, undefined, runtime)
 
   return { content: (result.text ?? '').trim(), tokensUsed: getTokensUsed(result) }
 }
 
 export async function summariseSessionSummaries(
   summaries: Array<Pick<Doc<'sessionSummaries'>, 'content' | 'order'>>,
+  runtime?: BackgroundGeminiRuntime,
 ): Promise<GeminiTextResult> {
   const source = summaries
     .sort((left, right) => left.order - right.order)
     .map((summary) => `[Summary ${summary.order + 1}]\n${summary.content}`)
     .join('\n\n')
-  const result = await generateContent(buildSessionSummaryCompressionPrompt(source))
+  const content = runtime === undefined ? buildSessionSummaryCompressionPrompt(source) : `${runtime.cachedContent === undefined ? `${runtime.systemPrompt}\n\n` : ''}<session_summaries>\n${source}\n</session_summaries>`
+  const result = await generateContent(content, undefined, runtime)
 
   return { content: (result.text ?? '').trim(), tokensUsed: getTokensUsed(result) }
 }
 
 export async function generateDailySummary(
   input: DailyCleanupInput,
+  runtime?: BackgroundGeminiRuntime,
 ): Promise<DailyCleanupResult> {
   const result = await generateContent(buildDailyCleanupInput(input), {
     responseMimeType: 'application/json',
     responseSchema: dailyCleanupSchema,
-    systemInstruction: DailyCleanupPrompt,
-  })
+    ...(runtime?.cachedContent === undefined ? { systemInstruction: runtime?.systemPrompt ?? DailyCleanupPrompt } : {}),
+  }, runtime)
   const parsed: unknown = JSON.parse(result.text ?? '')
   if (!isDailyCleanupResult(parsed)) throw new Error('Gemini returned an invalid daily cleanup result')
   return {

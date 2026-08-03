@@ -21,6 +21,12 @@ Replace the Phase 4 placeholder response with the full Gemini turn lifecycle. Th
 > the five-follow-up cap counts follow-up model requests rather than individual
 > tools. Exercise resolution uses the documented alias/vector
 > waterfall before a block is written.
+> `search_exercise_library` accepts up to five queries and returns only stable
+> `Library Exercise N` labels, names, descriptions, and scores; raw library IDs
+> remain server-internal. Valid labels are resolved immediately before
+> `log_workout` validation for the search turn plus three later user turns,
+> then automatically deleted; daily cleanup purges any remaining references.
+> Historical `Get_data` uses distinct `History Exercise N` labels.
 >
 > **Calculation-tool update (locked):** `calculate` is pure deterministic
 > PT-scope computation. It covers 1RM, percentage, compatible-unit conversion,
@@ -97,7 +103,7 @@ Replace the Phase 4 placeholder response with the full Gemini turn lifecycle. Th
 > **Get_data containment and replay diagnostics (2026-07-31):** Gemini may
 > still select an unnecessary initial lookup, so the runtime enforces a narrow
 > safety boundary: one general `Get_data` request (profile fields, daily
-> summary, or date range) per turn, plus only the documented later `Exercise N`
+> summary, or date range) per turn, plus only the documented later `History Exercise N`
 > detail request after a historical range. A repeated general request is
 > persisted as rejected with `redundant_data_lookup`, never executed, and ends
 > with the existing local conversational fallback rather than a failed turn.

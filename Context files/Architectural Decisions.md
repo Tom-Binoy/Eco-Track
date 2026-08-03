@@ -126,6 +126,11 @@ actions/runTurn.ts [action]
       permanent system instruction for every guide-active turn. The tool input
       carries `rawPhrase`, optional gathered `conversationDetail`, and the
       exact near-miss candidates with descriptions.
+      Library search accepts up to five queries and returns only stable
+      `Library Exercise N` labels, names, descriptions, and scores. Their raw
+      IDs remain in chat-scoped references for the search turn plus three later
+      user turns, then those rows are deleted; daily cleanup purges any
+      remaining references. Historical `Get_data` labels are `History Exercise N`.
       `Get_data` selects its read by optional arguments rather than a collection
       type: `collectionPoints` for profile fields, `dailySummaryDate`
       (`YYYY-MM-DD`) for one daily summary, and `dateRange` / `exerciseId` for

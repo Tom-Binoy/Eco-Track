@@ -388,6 +388,20 @@ toolTraces: {
 // Gemini history, or passed to compression. Cascades with its parent message
 // under both chat-deletion paths.
 
+exerciseSearchReferences: {
+  chatId, userId, messageId // FKs -> chats, profiles, messages
+  exerciseLibraryId         // FK -> exerciseLibrary; never exposed to Gemini
+  label                     // chat-scoped "Library Exercise N"
+  canonicalName, description, createdAt
+}
+.index('by_chat', ['chatId'])
+.index('by_message', ['messageId'])
+.index('by_user_and_chat', ['userId', 'chatId'])
+
+// Resolves library labels for the source turn plus three later user turns, then
+// deletes them. Cascades with its source message and under both chat-deletion
+// paths; daily cleanup purges all remaining references for the completed chat.
+
 
 dailySummaries: {
   chatId               // FK -> chats

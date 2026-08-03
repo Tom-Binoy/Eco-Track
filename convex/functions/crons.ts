@@ -1,7 +1,14 @@
 import { internal } from '../_generated/api'
+import { makeFunctionReference } from 'convex/server'
 import type { Doc } from '../_generated/dataModel'
 import { internalAction, type ActionCtx } from '../_generated/server'
 import { generateDailySummary } from '../lib/dailyCheck'
+
+type BackgroundRuntime = { workflow: 'daily'; modelId: string; systemPrompt: string; poolIds: string[]; cacheEnabled: boolean; configId?: string }
+const dailyRuntime = makeFunctionReference<'query', { workflow: 'daily' }, BackgroundRuntime>('debug/liveGemini:getActiveForWorkflow')
+const reserveLive = makeFunctionReference<'mutation', { workflow: 'daily'; modelId: string; poolIds: string[]; requestCount: number }, { apiKey?: string; reservationId?: string; error?: string }>('debug/liveGemini:reserve')
+const releaseLive = makeFunctionReference<'mutation', { reservationId: string; usedRequests: number; totalTokens: number }, null>('debug/liveGemini:releaseReservation')
+const ensureLiveCache = makeFunctionReference<'action', { configId: string }, { cacheName?: string; error?: string }>('debug/liveGemini:ensureCache')
 
 function getLocalDate(timestamp: number, timezone: string): string {
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -54,17 +61,26 @@ async function processDailyCheckForUser(
   if (localHour !== 0) return
 
   const yesterday = previousDate(localDate)
-  const existing = await ctx.runQuery(internal.functions.dailySummaries.getForDate, {
-    userId: profile._id,
-    date: yesterday,
-  })
-  if (existing !== null) return
-
   const chats = await ctx.runQuery(internal.functions.chats.getForDate, {
     userId: profile._id,
     date: yesterday,
   })
   if (chats.length === 0) return
+
+  const purgeReferences = async (): Promise<void> => {
+    await Promise.all(chats.map((chat) => ctx.runMutation(
+      internal.functions.messages.purgeLibraryReferencesForChat,
+      { chatId: chat._id, userId: profile._id },
+    )))
+  }
+  const existing = await ctx.runQuery(internal.functions.dailySummaries.getForDate, {
+    userId: profile._id,
+    date: yesterday,
+  })
+  if (existing !== null) {
+    await purgeReferences()
+    return
+  }
 
   const [latestWorkoutContext, chatMemory] = await Promise.all([
     ctx.runQuery(internal.functions.workoutContext.getLatest, { userId: profile._id }),
@@ -78,7 +94,10 @@ async function processDailyCheckForUser(
     })),
   ])
   const rawMessages = chatMemory.flatMap((memory) => memory.messages)
-  if (rawMessages.length === 0) return
+  if (rawMessages.length === 0) {
+    await purgeReferences()
+    return
+  }
 
   const dailySummariesSinceWorkoutContext = latestWorkoutContext === null
     ? await ctx.runQuery(internal.functions.dailySummaries.getSinceWorkoutContext, { userId: profile._id })
@@ -91,6 +110,10 @@ async function processDailyCheckForUser(
     userId: profile._id,
     date: yesterday,
   })
+  const runtime = await ctx.runQuery(dailyRuntime, { workflow: 'daily' })
+  const reservation = await ctx.runMutation(reserveLive, { workflow: 'daily', modelId: runtime.modelId, poolIds: runtime.poolIds, requestCount: 1 })
+  if (reservation.apiKey === undefined) throw new Error(reservation.error ?? 'No daily-summary Gemini capacity is available.')
+  const cache = !runtime.cacheEnabled || runtime.configId === undefined ? {} : await ctx.runAction(ensureLiveCache, { configId: runtime.configId })
   const dailyCleanup = await generateDailySummary({
     profile,
     workoutContext: latestWorkoutContext,
@@ -98,7 +121,8 @@ async function processDailyCheckForUser(
     sessionSummaries: chatMemory.flatMap((memory) => memory.sessionSummaries),
     rawMessages,
     daysSinceLastWorkoutContextUpdate: daysSince(latestWorkoutContext?._creationTime, now),
-  })
+  }, { modelId: runtime.modelId, systemPrompt: runtime.systemPrompt, apiKey: reservation.apiKey, cachedContent: cache.cacheName })
+  if (reservation.reservationId !== undefined) await ctx.runMutation(releaseLive, { reservationId: reservation.reservationId, usedRequests: 1, totalTokens: dailyCleanup.tokensUsed })
 
   await ctx.runMutation(internal.functions.apiUsage.logUsage, {
     userId: profile._id,
@@ -119,7 +143,10 @@ async function processDailyCheckForUser(
   if (!writeResult.created) return
 
   for (const chat of chats) {
-    await ctx.runMutation(internal.functions.sessionSummaries.purgeForChat, { chatId: chat._id })
+    await Promise.all([
+      ctx.runMutation(internal.functions.sessionSummaries.purgeForChat, { chatId: chat._id }),
+      ctx.runMutation(internal.functions.messages.purgeLibraryReferencesForChat, { chatId: chat._id, userId: profile._id }),
+    ])
   }
 
   const todayChats = await ctx.runQuery(internal.functions.chats.getForDate, {

@@ -109,16 +109,22 @@ function calculationSummary(args: UnknownRecord, result: UnknownRecord): string 
 }
 
 function searchSummary(args: UnknownRecord, result: UnknownRecord): string {
-  const rawInput = string(result.rawInput) ?? string(args.rawInput) ?? 'exercise'
-  const autoResolved = record(result.autoResolved)
-  const matched = autoResolved === null ? null : string(autoResolved.canonicalName)
-  if (matched !== null) return `Looked up “${rawInput}”: matched ${matched}.`
-  const candidates = Array.isArray(result.candidates)
-    ? result.candidates.map(record).flatMap((candidate) => candidate === null ? [] : [string(candidate.canonicalName)]).filter((candidate): candidate is string => candidate !== null).slice(0, 3)
-    : []
-  return candidates.length === 0
-    ? `Looked up “${rawInput}”: no confident match.`
-    : `Looked up “${rawInput}”: possible matches — ${candidates.join(', ')}.`
+  const searches = Array.isArray(result.searches) ? result.searches.map(record).filter((search): search is UnknownRecord => search !== null) : []
+  if (searches.length === 0) return 'Looked up exercise: no matching data found.'
+  return searches.map((search) => {
+    const query = string(search.query) ?? 'exercise'
+    const autoResolved = record(search.autoResolved)
+    const entries = autoResolved === null
+      ? (Array.isArray(search.candidates) ? search.candidates.map(record).filter((entry): entry is UnknownRecord => entry !== null).slice(0, 3) : [])
+      : [autoResolved]
+    const details = entries.map((entry) => {
+      const label = string(entry.exerciseId) ?? 'Library Exercise'
+      const name = string(entry.canonicalName) ?? 'Unnamed exercise'
+      const description = string(entry.description)
+      return `${label} — ${name}${description === null ? '' : ` — ${description}`}`
+    })
+    return entries.length === 0 ? `Looked up “${query}”: no confident match.` : `Looked up “${query}”: ${details.join('; ')}`
+  }).join('\n')
 }
 
 function workoutDetails(args: UnknownRecord): string {

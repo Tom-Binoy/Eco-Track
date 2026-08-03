@@ -145,13 +145,14 @@ async function deleteMessageForDebug(
   message: { _id: Id<'messages'>; chatId: Id<'chats'> },
   removeCardReferences: boolean,
 ): Promise<{ cardsDeleted: number }> {
-  const [blocks, toolTraces, cards, feedback, guideInvocations, events] = await Promise.all([
+  const [blocks, toolTraces, cards, feedback, guideInvocations, events, references] = await Promise.all([
     ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', message._id)).collect(),
     ctx.db.query('toolTraces').withIndex('by_message', (q) => q.eq('messageId', message._id)).collect(),
     ctx.db.query('cards').withIndex('by_message', (q) => q.eq('messageId', message._id)).collect(),
     ctx.db.query('messageFeedback').withIndex('by_message', (q) => q.eq('messageId', message._id)).collect(),
     ctx.db.query('guideInvocations').withIndex('by_message', (q) => q.eq('messageId', message._id)).collect(),
     ctx.db.query('debugTurnEvents').withIndex('by_message_and_sequence', (q) => q.eq('messageId', message._id)).collect(),
+    ctx.db.query('exerciseSearchReferences').withIndex('by_message', (q) => q.eq('messageId', message._id)).collect(),
   ])
   const cardIds = new Set(cards.map((card) => card._id))
 
@@ -171,6 +172,7 @@ async function deleteMessageForDebug(
   for (const item of feedback) await ctx.db.delete(item._id)
   for (const invocation of guideInvocations) await ctx.db.delete(invocation._id)
   for (const event of events) await ctx.db.delete(event._id)
+  for (const reference of references) await ctx.db.delete(reference._id)
   await deleteReplayArtifacts(ctx, message._id)
   await ctx.db.delete(message._id)
   return { cardsDeleted: cards.length }
@@ -400,10 +402,11 @@ export const forceDeleteChat = mutation({
     const chat = await ctx.db.get(args.chatId)
     if (chat === null) return { error: 'Chat not found.' }
 
-    const [messages, sessionSummaries, dailySummaries] = await Promise.all([
+    const [messages, sessionSummaries, dailySummaries, references] = await Promise.all([
       ctx.db.query('messages').withIndex('by_chat', (q) => q.eq('chatId', chat._id)).collect(),
       ctx.db.query('sessionSummaries').withIndex('by_chat_and_tier', (q) => q.eq('chatId', chat._id)).collect(),
       ctx.db.query('dailySummaries').withIndex('by_chat', (q) => q.eq('chatId', chat._id)).collect(),
+      ctx.db.query('exerciseSearchReferences').withIndex('by_chat', (q) => q.eq('chatId', chat._id)).collect(),
     ])
     let cardsDeleted = 0
     for (const message of messages) {
@@ -412,6 +415,7 @@ export const forceDeleteChat = mutation({
     }
     for (const summary of sessionSummaries) await ctx.db.delete(summary._id)
     for (const summary of dailySummaries) await ctx.db.delete(summary._id)
+    for (const reference of references) await ctx.db.delete(reference._id)
     await ctx.db.delete(chat._id)
     return { deleted: true, messagesDeleted: messages.length, cardsDeleted }
   },

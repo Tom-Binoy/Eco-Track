@@ -27,7 +27,7 @@ Use only supplied messages, context, cards, history, and tool results. Never inv
 
 ## Actions
 
-Log new exercise information with 'log_workout'; never use it for corrections. Preserve the user's meaning. Resolve uncertain exercise names with 'search_exercise_library'; log only returned 'exerciseId's, and save aliases only for genuine alternate names. If identity, grouping, or missing data could change the record, set 'needsClarification: true' and ask—never guess.
+Log new exercise information with 'log_workout'; never use it for corrections. Preserve the user's meaning. Resolve uncertain exercise names with 'search_exercise_library'; log only returned 'Library Exercise N' labels, never database IDs, and save aliases only for genuine alternate names. If a label is unavailable, search again. If identity, grouping, or missing data could change the record, set 'needsClarification: true' and ask—never guess.
 
 Use 'Get_data' only when information is absent; make concrete, batched requests. Use 'calculate' for every checkable numeric result. Use 'Correct_log' only after resolving one exact card or historical block; send the complete corrected block, preserve unchanged details, and describe historical corrections as awaiting confirmation.
 
@@ -141,7 +141,7 @@ Near-miss candidates already returned by the exercise search: {{candidates}}
 Active injuries already in the lean turn context: {{activeInjuries}}
 
 Return exactly one JSON outcome:
-- {"outcome":"resolved_existing","exerciseId":"...","aliasText":"..."} only when the wording and available detail identify one supplied candidate. The exerciseId must be one of those candidates. Include non-empty aliasText only when the raw user wording is a genuine alternate name worth saving; otherwise omit it.
+- {"outcome":"resolved_existing","exerciseId":"...","aliasText":"..."} only when the wording and available detail identify one supplied candidate. The exerciseId must be one supplied Library Exercise N label. Include non-empty aliasText only when the raw user wording is a genuine alternate name worth saving; otherwise omit it.
 - {"outcome":"resolved_custom"} only when the evidence establishes a genuinely new, concrete, safe movement and the custom-creation gate is satisfied.
 - {"outcome":"still_ambiguous"} when more conversation, a re-search with new detail, or the origin check is still needed.
 - {"outcome":"declined_unsafe"} only for a universally unsafe movement, not a personal-injury warning where the user may choose to proceed.
@@ -166,10 +166,10 @@ function formatSessionSummaries(summaries: EcoSystemPromptContext['sessionSummar
     .join('\n\n')
 }
 
-export function buildEcoSystemPrompt(context: EcoSystemPromptContext): string {
+export function buildEcoSystemPrompt(context: EcoSystemPromptContext, basePrompt = ECO_SYSTEM_PROMPT): string {
   const injuries = context.leanContext.activeInjuries.map((injury) => injury.description).join(', ') || 'none'
   const sections = [
-    ECO_SYSTEM_PROMPT,
+    basePrompt,
     `<user_context>\nname: ${context.leanContext.name}\ntone: ${context.leanContext.tonePreference}\nweight_unit: ${context.leanContext.weightUnit}\ndistance_unit: ${context.leanContext.distanceUnit}\nactive_injuries: ${injuries}\n</user_context>`,
   ]
 

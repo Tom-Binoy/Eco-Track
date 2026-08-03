@@ -212,6 +212,21 @@ export default defineSchema({
     .index('by_message', ['messageId'])
     .index('by_user_and_message', ['userId', 'messageId']),
 
+  // Opaque, chat-scoped handles shown to Gemini instead of exercise-library IDs.
+  exerciseSearchReferences: defineTable({
+    chatId: v.id('chats'),
+    userId: v.id('profiles'),
+    messageId: v.id('messages'),
+    exerciseLibraryId: v.id('exerciseLibrary'),
+    label: v.string(),
+    canonicalName: v.string(),
+    description: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index('by_chat', ['chatId'])
+    .index('by_message', ['messageId'])
+    .index('by_user_and_chat', ['userId', 'chatId']),
+
   dailySummaries: defineTable({
     chatId: v.id('chats'),
     userId: v.id('profiles'),

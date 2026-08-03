@@ -1,9 +1,16 @@
 import { v } from 'convex/values'
+import { makeFunctionReference } from 'convex/server'
 
 import { internal } from '../_generated/api'
 import type { Doc } from '../_generated/dataModel'
 import { internalAction, internalMutation, internalQuery } from '../_generated/server'
 import { summariseMessages, summariseSessionSummaries } from '../lib/dailyCheck'
+
+type SessionRuntime = { workflow: 'session'; modelId: string; systemPrompt: string; poolIds: string[]; cacheEnabled: boolean; configId?: string }
+const sessionRuntime = makeFunctionReference<'query', { workflow: 'session' }, SessionRuntime>('debug/liveGemini:getActiveForWorkflow')
+const reserveLive = makeFunctionReference<'mutation', { workflow: 'session'; modelId: string; poolIds: string[]; requestCount: number }, { apiKey?: string; reservationId?: string; error?: string }>('debug/liveGemini:reserve')
+const releaseLive = makeFunctionReference<'mutation', { reservationId: string; usedRequests: number; totalTokens: number }, null>('debug/liveGemini:releaseReservation')
+const ensureLiveCache = makeFunctionReference<'action', { configId: string }, { cacheName?: string; error?: string }>('debug/liveGemini:ensureCache')
 
 const COMPRESSIBLE_CHARACTER_THRESHOLD = 10_000
 const RECENT_MESSAGES_TO_KEEP = 5
@@ -136,7 +143,13 @@ export const compressIfNeeded = internalAction({
     }
 
     try {
-      const result = await summariseMessages(candidate)
+      const runtime = await ctx.runQuery(sessionRuntime, { workflow: 'session' })
+      const reservation = await ctx.runMutation(reserveLive, { workflow: 'session', modelId: runtime.modelId, poolIds: runtime.poolIds, requestCount: 1 })
+      if (reservation.apiKey === undefined) return { compressed: false, error: reservation.error ?? 'No session-summary Gemini capacity is available.' }
+      const cache = !runtime.cacheEnabled || runtime.configId === undefined ? {} : await ctx.runAction(ensureLiveCache, { configId: runtime.configId })
+      const backgroundRuntime = { modelId: runtime.modelId, systemPrompt: runtime.systemPrompt, apiKey: reservation.apiKey, cachedContent: cache.cacheName }
+      const result = await summariseMessages(candidate, backgroundRuntime)
+      if (reservation.reservationId !== undefined) await ctx.runMutation(releaseLive, { reservationId: reservation.reservationId, usedRequests: 1, totalTokens: result.tokensUsed })
       await ctx.runMutation(internal.functions.apiUsage.logUsage, {
         userId: args.userId,
         tokensUsed: result.tokensUsed,
@@ -161,7 +174,10 @@ export const compressIfNeeded = internalAction({
       // sixth and any newer rows stay available as the fresh Tier-1 tail.
       if (tierOne.length >= 6 && retainedTierOne !== undefined) {
         const tierTwoSources = tierOne.slice(0, 5)
-        const tierTwo = await summariseSessionSummaries(tierTwoSources)
+        const tierTwoReservation = await ctx.runMutation(reserveLive, { workflow: 'session', modelId: runtime.modelId, poolIds: runtime.poolIds, requestCount: 1 })
+        if (tierTwoReservation.apiKey === undefined) return { compressed: true, error: tierTwoReservation.error ?? 'Tier 2 summary was skipped because no Gemini capacity is available.' }
+        const tierTwo = await summariseSessionSummaries(tierTwoSources, { ...backgroundRuntime, apiKey: tierTwoReservation.apiKey })
+        if (tierTwoReservation.reservationId !== undefined) await ctx.runMutation(releaseLive, { reservationId: tierTwoReservation.reservationId, usedRequests: 1, totalTokens: tierTwo.tokensUsed })
         const tierTwoWrite = await ctx.runMutation(
           internal.functions.sessionSummaries.writeTierTwoAndRemoveTierOne,
           {

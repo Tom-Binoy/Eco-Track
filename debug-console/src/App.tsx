@@ -4,6 +4,8 @@ import { makeFunctionReference } from 'convex/server'
 import { useMemo, useState, type ReactElement } from 'react'
 
 import type { Doc, Id } from '../../convex/_generated/dataModel'
+import { Evaluations } from './Evaluations'
+import { LiveGemini } from './LiveGemini'
 
 type TurnSummary = {
   chatDate: string
@@ -676,6 +678,7 @@ function Console(): ReactElement {
   const result = useQuery(listTurnsQuery, selectedUser === null || selectedDate === null ? 'skip' : { profileId: selectedUser.profileId, date: selectedDate, limit: 50 })
   const [filter, setFilter] = useState<Filter>('all')
   const [search, setSearch] = useState('')
+  const [screen, setScreen] = useState<'diagnostics' | 'evaluations' | 'live-gemini'>('diagnostics')
 
   const turns = (result?.turns ?? []) as TurnSummary[]
   const filteredTurns = useMemo(() => {
@@ -698,6 +701,9 @@ function Console(): ReactElement {
   const errorCount = turns.filter((turn) => turn.hasError).length
   const eventCount = turns.reduce((total, turn) => total + turn.eventCount, 0)
 
+  if (screen === 'evaluations') return <Evaluations onBack={() => setScreen('diagnostics')} />
+  if (screen === 'live-gemini') return <LiveGemini onBack={() => setScreen('diagnostics')} />
+
   return (
     <main className="console-shell">
       <header className="console-header">
@@ -710,6 +716,12 @@ function Console(): ReactElement {
         </div>
         <div className="header-actions">
           <span className="connection-state"><i /> LIVE</span>
+          <button className="text-button" onClick={() => setScreen('evaluations')} type="button">
+            Model evaluations
+          </button>
+          <button className="text-button" onClick={() => setScreen('live-gemini')} type="button">
+            Live Gemini controls
+          </button>
           <button className="text-button" onClick={() => void signOut()} type="button">
             Sign out
           </button>

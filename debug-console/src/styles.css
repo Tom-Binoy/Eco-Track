@@ -409,6 +409,231 @@ pre {
   color: var(--muted);
 }
 
+.evaluation-config,
+.evaluation-create,
+.evaluation-detail {
+  padding: 34px 0;
+  border-top: 1px solid var(--line);
+}
+
+.evaluation-config > p,
+.evaluation-detail > p,
+.evaluation-create > p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.evaluation-config h2,
+.evaluation-detail h2,
+.evaluation-create h3,
+.evaluation-list h3 {
+  color: var(--bright);
+}
+
+.evaluation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.evaluation-grid details,
+.evaluation-create,
+.evaluation-list > div,
+.evaluation-arms > div,
+.evaluation-samples article {
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.evaluation-grid summary {
+  cursor: pointer;
+  color: var(--bright);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.evaluation-grid details[open] summary {
+  margin-bottom: 14px;
+  color: var(--green);
+}
+
+.evaluation-grid input,
+.evaluation-grid select,
+.evaluation-grid textarea,
+.evaluation-create input,
+.evaluation-create select {
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: #0e120f;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.evaluation-grid textarea {
+  min-height: 130px;
+  resize: vertical;
+}
+
+.evaluation-create {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 32px;
+}
+
+.evaluation-create .primary-button {
+  width: auto;
+  padding: 0 20px;
+}
+
+.checkbox-list {
+  display: grid;
+  gap: 7px;
+  margin: 8px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.checkbox-list input {
+  width: auto;
+  margin: 0 6px 0 0;
+}
+
+.evaluation-notice {
+  color: var(--amber);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.evaluation-list {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0 44px;
+}
+
+.evaluation-list > div,
+.evaluation-arms > div {
+  display: grid;
+  gap: 5px;
+}
+
+.evaluation-list span,
+.evaluation-arms span,
+.evaluation-arms small {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.pool-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.pool-add select {
+  min-width: 0;
+  flex: 1;
+  padding: 7px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: #0e120f;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.evaluation-arms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  margin: 22px 0;
+}
+
+.evaluation-samples {
+  display: grid;
+  gap: 10px;
+}
+
+.evaluation-samples article header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--bright);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.evaluation-samples article header span {
+  color: var(--green);
+  text-transform: uppercase;
+}
+
+.evaluation-samples pre {
+  white-space: pre-wrap;
+  color: #c2cec5;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.live-gemini-active,
+.live-gemini-editor,
+.live-gemini-history {
+  margin-top: 20px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+}
+
+.live-gemini-editor label {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  color: var(--muted);
+}
+
+.live-gemini-editor input,
+.live-gemini-editor textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-raised);
+  color: var(--text);
+  padding: 10px;
+}
+
+.live-gemini-editor textarea { min-height: 330px; resize: vertical; }
+
+.live-gemini-history article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.live-gemini-history article div { display: grid; gap: 4px; }
+.live-gemini-history article span,
+.live-gemini-history article small { color: var(--muted); }
+
+.review-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .evaluation-grid { grid-template-columns: 1fr; }
+}
+
 .back-button {
   min-height: 38px;
   margin: 0 0 18px;

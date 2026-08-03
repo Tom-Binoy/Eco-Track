@@ -11,7 +11,9 @@
 import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
 import type * as debug_config from "../debug/config.js";
+import type * as debug_evaluations from "../debug/evaluations.js";
 import type * as debug_events from "../debug/events.js";
+import type * as debug_liveGemini from "../debug/liveGemini.js";
 import type * as debug_replay from "../debug/replay.js";
 import type * as debug_sanitise from "../debug/sanitise.js";
 import type * as debug_trace from "../debug/trace.js";
@@ -53,7 +55,9 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   crons: typeof crons;
   "debug/config": typeof debug_config;
+  "debug/evaluations": typeof debug_evaluations;
   "debug/events": typeof debug_events;
+  "debug/liveGemini": typeof debug_liveGemini;
   "debug/replay": typeof debug_replay;
   "debug/sanitise": typeof debug_sanitise;
   "debug/trace": typeof debug_trace;

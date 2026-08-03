@@ -92,7 +92,7 @@ Full schema lives in `Final-Schema.txt` in the working directory. Key facts Code
 
 ### Tables at a glance
 
-`profiles` · `chats` · `messages` · `cards` · `sessions` · `blocks` · `exercises` · `exerciseLibrary` · `exerciseLibraryEmbeddings` · `userExerciseAliases` · `userExerciseAliasEmbeddings` · `messageBlocks` · `toolTraces` · `dailySummaries` · `workoutContext` · `sessionSummaries` · `apiUsage` · `guideInvocations` · `messageFeedback` · `userReports`
+`profiles` · `chats` · `messages` · `cards` · `sessions` · `blocks` · `exercises` · `exerciseLibrary` · `exerciseLibraryEmbeddings` · `userExerciseAliases` · `userExerciseAliasEmbeddings` · `messageBlocks` · `toolTraces` · `exerciseSearchReferences` · `dailySummaries` · `workoutContext` · `sessionSummaries` · `apiUsage` · `guideInvocations` · `messageFeedback` · `userReports`
 
 ---
 
@@ -130,7 +130,7 @@ Full spec lives in `Turn-Lifecycle-Specification.txt` in the working directory. 
    `still_ambiguous`, or `declined_unsafe`. It never creates an exercise or
    alias; Eco guides near-miss candidates conversationally. A resolved existing
    result goes directly into the next `log_workout`; a resolved custom result
-   requires `create_custom_exercise` and its returned ID first, while
+   requires `create_custom_exercise` and its returned `Library Exercise N` label first, while
    still-ambiguous stays conversational. `declined_unsafe` is a pure
    conversational close: no card, library write, or alias, while the executed
    guidance call still receives its usual `guideInvocations` review row.
@@ -169,6 +169,12 @@ Full spec lives in `Turn-Lifecycle-Specification.txt` in the working directory. 
    work stress and mental health-adjacent topics. `Daily-Cleanup_Prompt` is the
    daily memory instruction export.
 10. **Exercise library** — global wger exercises are seeded through the internal `functions/seedWger:seed` action. The public wger API needs no key; English is language ID `2`, and reruns upsert by `wgerId`. Existing library rows are embedded by the manually invoked public `functions/embedExerciseLibrary:backfill` action (never a cron or app call): it paginates 10 rows at a time, skips rows already present in `exerciseLibraryEmbeddings` by `by_exercise`, embeds each row's `searchBlob`, and copies the source `userId`, `equipment`, and `muscleGroup`. It uses a 700ms baseline delay and retries 429s up to five times with `Retry-After` when supplied or exponential backoff otherwise; exhausted rows are logged and reported without aborting the run. The read-only resolver is `functions/exerciseLibrary:searchForTurn`: it normalizes through the shared `lib/exerciseNormalization:normalizeExerciseInput` helper used by confirmed-alias writes, then performs the exact-alias → user-alias vector → personal/global library vector waterfall. It creates one `RETRIEVAL_QUERY` embedding with `gemini-embedding-001` at 768 dimensions and searches five hits per vector source; personal wins exact library-score ties. A 0.82 cosine similarity is the provisional auto-resolution threshold. Below threshold, it returns at most five ranked near-miss candidates; it never persists an alias or library row. The guide resolver may return optional `aliasText` with `resolved_existing` only for a genuine alternate name; the following confirmed write creates or updates `userExerciseAliases` only when that value is non-empty. The name-plus-aliases `searchBlob` is document-embedded; full-text `search_name` is intentionally absent. `create_custom_exercise` is the deliberate exception to confirmation-only creation: it creates and immediately embeds a personal custom row with a required description; it never creates a global row or a user alias. Exercise display defaults to `exerciseLibrary.canonicalName`; card-query results carry both that canonical name and a displayed name, using the raw wording only when it matches that user's confirmed alias. Workout cards render `displayedName` as the primary label and, only when it differs from `canonicalName`, render the canonical name beneath it as a clearly legible secondary label. `exercises.name` remains the unchanged raw extracted string.
+
+   `search_exercise_library` accepts up to five queries and exposes only `Library Exercise N` labels, names, descriptions, and scores. `exerciseSearchReferences` privately maps each chat-scoped label to its library ID for the search turn plus three later user turns, then deletes that reference; `log_workout` resolves a valid label before validation, while expired labels require a fresh search. Historical `Get_data` results use separate `History Exercise N` labels.
+   Search history keeps the top three labeled results per query during that
+   window, then uses name-only summaries; compression never receives labels.
+   The local-midnight daily cleanup purges the chat's references after it has
+   processed that day's memory.
 
 ---
 
@@ -223,7 +229,7 @@ judgment.
 
 ## Deferred — Do Not Implement in V1
 
-- Gemini-side prompt caching
+- Production Gemini prompt caching outside the development Live Gemini controls
 - Multi-card free-text Ask Eco
 - Message editing beyond most recent
 - Git-style chat history

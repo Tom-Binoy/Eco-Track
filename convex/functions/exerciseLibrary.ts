@@ -36,7 +36,7 @@ type SearchTurnResult = {
   // Compatibility fields for the already-existing tool loop. They can be
   // removed when that wiring is deliberately migrated to the new shape.
   normalized: string
-  autoResolved: { exerciseId: Id<'exerciseLibrary'>; canonicalName: string; score: number } | null
+  autoResolved: { exerciseId: Id<'exerciseLibrary'>; canonicalName: string; description: string | null; score: number } | null
 }
 
 function unresolved(normalized: string, candidates: VectorMatch[] = [], error?: string): SearchTurnResult {
@@ -57,7 +57,7 @@ function resolved(
     source,
     candidates: [],
     normalized,
-    autoResolved: { exerciseId: exercise._id, canonicalName: exercise.canonicalName, score: confidence },
+    autoResolved: { exerciseId: exercise._id, canonicalName: exercise.canonicalName, description: exercise.description ?? null, score: confidence },
   }
 }
 
