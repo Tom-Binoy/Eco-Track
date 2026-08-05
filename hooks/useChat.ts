@@ -5,14 +5,18 @@ import { api } from '@/convex/_generated/api'
 import type { Id } from '@/convex/_generated/dataModel'
 import type { Card } from '@/types/db'
 import type { ChatMessage } from '@/types/chat'
+import type { PresentedCard } from '@/types/presentation'
 
 const responseUnavailableText = 'Eco could not respond right now. Please try again.'
 
 interface UseChatResult {
+  chatId: Id<'chats'> | null | undefined
   discussionCard: Card | null | undefined
   hasFailedTurn: boolean
   isLoading: boolean
+  messagesReady: boolean
   messages: ChatMessage[]
+  pendingCards: PresentedCard[]
   turnStatus: string | null
   retryMessage: (messageId: Id<'messages'>) => Promise<void>
   sendMessage: (text: string) => Promise<void>
@@ -32,6 +36,10 @@ export function useChat(): UseChatResult {
     api.functions.cards.getDiscussionCard,
     chat === undefined || chat === null ? 'skip' : { chatId: chat._id },
   )
+  const pendingCards = useQuery(
+    api.functions.cards.getPendingDeck,
+    chat === undefined || chat === null ? 'skip' : { chatId: chat._id },
+  ) as PresentedCard[] | undefined
   const messages = useMemo<ChatMessage[]>(() => {
     const storedMessages = messageResult?.messages ?? []
 
@@ -103,5 +111,5 @@ export function useChat(): UseChatResult {
     }
   }, [chat, processTurn])
 
-  return { discussionCard, hasFailedTurn, isLoading, messages, retryMessage, sendMessage, turnStatus }
+  return { chatId: chat?._id, discussionCard, hasFailedTurn, isLoading, messages, messagesReady: messageResult !== undefined, pendingCards: pendingCards ?? [], retryMessage, sendMessage, turnStatus }
 }

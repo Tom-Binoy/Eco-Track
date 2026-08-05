@@ -3,6 +3,7 @@ import type { ReactElement } from 'react'
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 
 import type { Card } from '@/types/db'
+import { colors, shadows, typography } from '@/components/ui/theme'
 
 interface ChatInputProps {
   discussionCard: Card | null | undefined
@@ -61,6 +62,7 @@ export function ChatInput({ discussionCard, discussionError, hasFailedTurn, isCl
           onSubmitEditing={handleSend}
           placeholder={hasFailedTurn ? 'Retry Eco’s failed response to continue' : 'What did you train today?'}
           placeholderTextColor="#9a9893"
+          keyboardAppearance="dark"
           multiline
           style={styles.input}
           returnKeyType="send"
@@ -72,7 +74,7 @@ export function ChatInput({ discussionCard, discussionError, hasFailedTurn, isCl
           accessibilityRole="button"
           disabled={!canSend}
           onPress={handleSend}
-          style={[styles.sendButton, canSend ? styles.sendButtonEnabled : styles.sendButtonDisabled]}
+          style={({ pressed }) => [styles.sendButton, canSend ? styles.sendButtonEnabled : styles.sendButtonDisabled, pressed && canSend && styles.sendButtonPressed]}
         >
           <Text style={[styles.sendIcon, canSend ? styles.sendIconEnabled : styles.sendIconDisabled]}>↑</Text>
         </Pressable>
@@ -84,11 +86,11 @@ export function ChatInput({ discussionCard, discussionError, hasFailedTurn, isCl
 const styles = StyleSheet.create({
   backToDeckButton: { alignItems: 'center', borderColor: 'rgba(74, 222, 128, 0.42)', borderRadius: 9, borderWidth: 1, justifyContent: 'center', minHeight: 44, paddingHorizontal: 12 },
   backToDeckButtonDisabled: { opacity: 0.55 },
-  backToDeckText: { color: '#86efac', fontFamily: 'serif', fontSize: 12, fontWeight: '700' },
+  backToDeckText: { color: '#86efac', fontFamily: typography.body, fontSize: 12, fontWeight: '700' },
   container: {
     alignItems: 'flex-end',
-    backgroundColor: '#252420',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.inset,
+    borderColor: colors.border,
     borderRadius: 16,
     borderWidth: 1,
     flexDirection: 'row',
@@ -98,18 +100,20 @@ const styles = StyleSheet.create({
     paddingLeft: 15,
     paddingRight: 10,
     paddingTop: 10,
+    ...shadows.composer,
   },
   discussionBanner: { alignItems: 'center', backgroundColor: '#102a1a', borderColor: 'rgba(74, 222, 128, 0.36)', borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: 10, justifyContent: 'space-between', marginBottom: 8, paddingHorizontal: 12, paddingVertical: 10 },
   discussionCopy: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 9 },
-  discussionDescription: { color: '#a7c7af', fontFamily: 'serif', fontSize: 11, lineHeight: 15 },
+  discussionDescription: { color: '#a7c7af', fontFamily: typography.body, fontSize: 11, lineHeight: 15 },
   discussionError: { color: '#fca5a5' },
   discussionIndicator: { backgroundColor: '#4ade80', borderColor: '#bbf7d0', borderRadius: 6, borderWidth: 2, height: 12, width: 12 },
   discussionTextWrap: { flex: 1 },
-  discussionTitle: { color: '#dcfce7', fontFamily: 'serif', fontSize: 13, fontWeight: '700', lineHeight: 17 },
-  inputArea: { marginHorizontal: 16, marginVertical: 14 },
+  discussionTitle: { color: '#dcfce7', fontFamily: typography.body, fontSize: 13, fontWeight: '700', lineHeight: 17 },
+  inputArea: { backgroundColor: colors.background, paddingBottom: 14, paddingHorizontal: 16, paddingTop: 8 },
   input: {
-    color: '#eeeeee',
+    color: colors.text,
     flex: 1,
+    fontFamily: typography.body,
     fontSize: 15,
     maxHeight: 120,
     minHeight: 36,
@@ -117,9 +121,10 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   sendButton: { alignItems: 'center', borderRadius: 11, height: 38, justifyContent: 'center', width: 38 },
-  sendButtonDisabled: { backgroundColor: '#302f2c' },
-  sendButtonEnabled: { backgroundColor: '#22c55e' },
+  sendButtonDisabled: { backgroundColor: colors.surface },
+  sendButtonEnabled: { backgroundColor: colors.accent, ...shadows.glow },
+  sendButtonPressed: { transform: [{ scale: 0.94 }] },
   sendIcon: { fontSize: 18, lineHeight: 22 },
-  sendIconDisabled: { color: '#696762' },
+  sendIconDisabled: { color: colors.faint },
   sendIconEnabled: { color: '#ffffff' },
 })

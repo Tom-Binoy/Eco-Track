@@ -4,14 +4,18 @@ import { ConvexAuthProvider, useAuthActions } from '@convex-dev/auth/react'
 import { ConvexReactClient, useMutation } from 'convex/react'
 import * as Linking from 'expo-linking'
 import { Slot, useRouter, useSegments } from 'expo-router'
+import { StatusBar } from 'expo-status-bar'
 import type { Href } from 'expo-router'
 import { useEffect } from 'react'
 import type { ReactElement } from 'react'
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native'
+import { GestureHandlerRootView } from 'react-native-gesture-handler'
 
 import { api } from '@/convex/_generated/api'
 import { useAuth } from '@/hooks/useAuth'
 import { tokenStorage } from '@/lib/auth/tokenStorage'
+import { colors } from '@/components/ui/theme'
+import { MotionProvider } from '@/hooks/useMotion'
 
 const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL
 
@@ -96,20 +100,26 @@ function AppLoadingScreen(): ReactElement {
 
 export default function RootLayout(): ReactElement {
   return (
-    <ConvexAuthProvider client={convex} storage={tokenStorage}>
-      {Platform.OS !== 'web' && <OAuthCallbackHandler />}
-      <AuthGuard />
-    </ConvexAuthProvider>
+    <GestureHandlerRootView style={styles.root}>
+      <StatusBar style="light" />
+      <ConvexAuthProvider client={convex} storage={tokenStorage}>
+        <MotionProvider>
+          {Platform.OS !== 'web' && <OAuthCallbackHandler />}
+          <AuthGuard />
+        </MotionProvider>
+      </ConvexAuthProvider>
+    </GestureHandlerRootView>
   )
 }
 
 const styles = StyleSheet.create({
   loadingContainer: {
     alignItems: 'center',
-    backgroundColor: '#000000',
+    backgroundColor: colors.frame,
     flex: 1,
     gap: 12,
     justifyContent: 'center',
   },
   loadingLabel: { color: '#ffffff', fontSize: 15 },
+  root: { backgroundColor: colors.frame, flex: 1 },
 })

@@ -144,7 +144,8 @@ export const debugTables = {
     totalTokens: v.number(),
     requestedAt: v.number(),
     dayKey: v.string(),
-    status: v.union(v.literal('active'), v.literal('released')),
+    status: v.union(v.literal('active'), v.literal('released'), v.literal('rate_limited')),
+    cooldownUntil: v.optional(v.number()),
   }).index('by_pool_model_and_requestedAt', ['poolId', 'modelId', 'requestedAt'])
     .index('by_pool_model_day', ['poolId', 'modelId', 'dayKey']),
   debugLiveGeminiCaches: defineTable({

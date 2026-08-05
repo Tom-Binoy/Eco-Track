@@ -79,6 +79,7 @@ Full schema lives in `Final-Schema.txt` in the working directory. Key facts Code
 - `cards.state` is only `"pending" | "confirmed"` — no editing state
 - `cards.sessionId` is optional — unset on low-confidence cards until user confirms
 - `apiUsage` tracks `tokensUsed` per turn — used by paywall to gate free users
+- `profiles.motionPreference` and `profiles.ecoRevealPreference` are user-synced presentation preferences only. They must never be supplied to Gemini context or affect persisted turn data.
 - `guideInvocations` is a backend-only, write-once safety/tuning review log
   for executed `get_new_exercise_guidance` calls only.
   It is never sent to Gemini,
@@ -134,10 +135,16 @@ Full spec lives in `Turn-Lifecycle-Specification.txt` in the working directory. 
    still-ambiguous stays conversational. `declined_unsafe` is a pure
    conversational close: no card, library write, or alias, while the executed
    guidance call still receives its usual `guideInvocations` review row.
-3. **Response branches** — a response may contain a batch of function requests
-   or text only. `log_workout` and `Correct_log` are ordinary tool steps:
+3. **Response branches** — a response may contain ordered text alongside a
+   batch of function requests, or text only. `log_workout` and `Correct_log` are ordinary tool steps:
    validate, persist truthfully when valid, return their result to Gemini, and
    let Gemini produce the one final natural reply.
+   Text emitted with a tool call is optional interim engagement: it must add
+   specific conversational value from facts already known, never narrate tool
+   progress or imply a result before the tool returns. Routine or fast tool
+   work may remain text-free. The client renders text, safe tool summaries, and
+   any cards produced or changed by that tool in chronological order; activity
+   is collapsed by default behind one per-turn toggle.
    Main-turn function-call and function-response IDs are preserved and matched
    through the typed `@google/genai` SDK. The same SDK `Chat` instance carries
    Gemini 3 thought signatures through a tool loop; never manually add a

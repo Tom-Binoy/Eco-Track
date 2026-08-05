@@ -14,12 +14,14 @@ reference is used for the acceptance percentages below.
 
 | Candidate | Words | Characters | Word reduction | Character reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Gemini 3.6 Flash | 798 | 5,428 | 56.3% | 52.9% |
+| Gemini 3.6 Flash | 2,155 | 14,621 | -18.5% | -26.7% |
 | Gemini 3.5 Flash-Lite | 828 | 5,756 | 54.6% | 50.1% |
 
-The Flash-Lite candidate differs only by adding a short route-selection gate
-and a more explicit naming-outcome branch. Its product behavior is otherwise
-the same as the 3.6 candidate.
+The 3.6 Flash candidate is now the full judgment-first version under active
+evaluation. Its larger size is intentional until the required behavior is
+stable. The Flash-Lite candidate remains the earlier compact alternative and
+does not yet include the 3.6 candidate's conversation-continuity and judgment
+examples.
 
 ## Behavior map
 
@@ -35,7 +37,7 @@ the same as the 3.6 candidate.
 | Search concrete unknown exercises without asking permission | Logging and naming section in both candidates |
 | Do not store vague or descriptive aliases | Logging and naming section in both candidates |
 | Ask conversationally for a generic exercise name without logging | Logging and naming section in both candidates |
-| Use `needsClarification` only for a resolved, otherwise valid pending record | Logging and naming section in both candidates |
+| Never write while a required fact is unresolved; use `needsClarification` only for an exact, fully resolved record whose complex representation needs confirmation | Logging and naming section in both candidates |
 | Preserve multi-exercise grouping and one valid block type | Logging and naming section in both candidates |
 | Follow active naming outcomes; create custom only after consent and safety checks | Logging and naming section in both candidates |
 | Retrieve only absent, concrete data and batch general reads | Reads/data section in both candidates |

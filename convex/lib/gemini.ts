@@ -58,11 +58,15 @@ export interface GeminiUsage { prompt?: number; output?: number; total: number }
 export type GeminiFunctionCall = FunctionCall
 export interface GeminiResponse {
   functionCalls: GeminiFunctionCall[]
+  parts: GeminiResponsePart[]
   rawText: string
   text: string
   tokensUsed: number
   usage: GeminiUsage
 }
+export type GeminiResponsePart =
+  | { kind: 'text'; text: string }
+  | { kind: 'functionCall'; call: GeminiFunctionCall }
 export interface GeminiTurn { chat: Chat; response: GeminiResponse }
 export interface GeminiRuntimeConfig { modelId: string; systemPrompt: string; apiKey?: string; cachedContent?: string }
 export interface GeminiEvaluationTurnInput {
@@ -125,10 +129,19 @@ function buildHistory(
 }
 function textReply(text: string, fallback: string): string { try { const value: unknown = JSON.parse(text); if (typeof value === 'object' && value !== null && 'reply' in value && typeof value.reply === 'string') return value.reply } catch { /* tool calls commonly have no text */ } return text || fallback }
 function toGeminiResponse(response: GenerateContentResponse): GeminiResponse {
-  const functionCalls = response.functionCalls ?? []
-  // The SDK warns when `.text` is read from a response that contains function
-  // calls. Tool batches do not need text, so read it only for a final reply.
-  const rawText = functionCalls.length === 0 ? response.text ?? '' : ''
+  const rawParts = response.candidates?.[0]?.content?.parts ?? []
+  const parts: GeminiResponsePart[] = []
+  for (const part of rawParts) {
+    if (part.thought === true) continue
+    if (part.functionCall !== undefined) parts.push({ kind: 'functionCall', call: part.functionCall })
+    else if (typeof part.text === 'string' && part.text.length > 0) parts.push({ kind: 'text', text: part.text })
+  }
+  const parsedFunctionCalls = parts.flatMap((part) => part.kind === 'functionCall' ? [part.call] : [])
+  const functionCalls = parsedFunctionCalls.length > 0 ? parsedFunctionCalls : response.functionCalls ?? []
+  if (parsedFunctionCalls.length === 0) {
+    parts.push(...functionCalls.map((call) => ({ kind: 'functionCall' as const, call })))
+  }
+  const rawText = parts.flatMap((part) => part.kind === 'text' ? [part.text] : []).join('')
   const usage = {
     prompt: response.usageMetadata?.promptTokenCount,
     output: response.usageMetadata?.candidatesTokenCount,
@@ -136,6 +149,9 @@ function toGeminiResponse(response: GenerateContentResponse): GeminiResponse {
   }
   return {
     functionCalls,
+    parts: parts.map((part) => part.kind === 'text'
+      ? { kind: 'text' as const, text: textReply(part.text, '') }
+      : part).filter((part) => part.kind !== 'text' || part.text.length > 0),
     rawText,
     text: textReply(rawText, functionCalls.length > 0 ? '' : 'I’m here — could you say that another way?'),
     tokensUsed: usage.total,
@@ -300,6 +316,27 @@ export async function continueGeminiTurn(
     })),
   })
   return toGeminiResponse(response)
+}
+
+// A provider-429 cannot be retried through the original Chat because its
+// client is bound to the failed key. Recreate the SDK chat with its typed
+// curated history, which includes the preceding model function calls and
+// their opaque thought signatures, then continue with the alternate key.
+export function resumeGeminiTurnForFailover(chat: Chat, context: GeminiContext, runtimeConfig: GeminiRuntimeConfig): Chat {
+  const apiKey = runtimeConfig.apiKey ?? process.env.GEMINI_API_KEY
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not configured')
+  return new GoogleGenAI({ apiKey }).chats.create({
+    model: runtimeConfig.modelId,
+    history: chat.getHistory(true),
+    config: {
+      httpOptions: { timeout: modelRequestTimeoutMs },
+      responseMimeType: 'application/json',
+      responseSchema: replySchema,
+      systemInstruction: buildEcoSystemPrompt(context, runtimeConfig.systemPrompt || undefined),
+      tools: [{ functionDeclarations: toolsForContext(context) }],
+      toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.AUTO } },
+    },
+  })
 }
 
 export async function getNewExerciseGuidance(input: NewExerciseGuidanceInput, activeInjuries: LeanContext['activeInjuries'], modelId = GEMINI_MODEL, apiKeyOverride?: string): Promise<NewExerciseGuidanceResult> {

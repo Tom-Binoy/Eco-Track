@@ -2,18 +2,23 @@ import { useEffect, useRef } from 'react'
 import type { ReactElement } from 'react'
 import { Animated, StyleSheet, View } from 'react-native'
 
+import { colors } from '@/components/ui/theme'
+import { useMotion } from '@/hooks/useMotion'
+
 export function TypingIndicator(): ReactElement {
+  const { reducedMotion, tokens } = useMotion()
   const firstOpacity = useRef(new Animated.Value(0.3)).current
   const secondOpacity = useRef(new Animated.Value(0.3)).current
   const thirdOpacity = useRef(new Animated.Value(0.3)).current
 
   useEffect(() => {
+    if (reducedMotion) return
     const dots = [firstOpacity, secondOpacity, thirdOpacity]
     const animation = Animated.loop(
       Animated.sequence(
         dots.flatMap((dot) => [
-          Animated.timing(dot, { duration: 250, toValue: 1, useNativeDriver: true }),
-          Animated.timing(dot, { duration: 250, toValue: 0.3, useNativeDriver: true }),
+          Animated.timing(dot, { duration: Math.round(tokens.ambient / 6), toValue: 1, useNativeDriver: true }),
+          Animated.timing(dot, { duration: Math.round(tokens.ambient / 6), toValue: 0.3, useNativeDriver: true }),
         ]),
       ),
     )
@@ -21,7 +26,7 @@ export function TypingIndicator(): ReactElement {
     animation.start()
 
     return (): void => animation.stop()
-  }, [firstOpacity, secondOpacity, thirdOpacity])
+  }, [firstOpacity, reducedMotion, secondOpacity, thirdOpacity, tokens.ambient])
 
   return (
     <View style={styles.row}>
@@ -41,6 +46,6 @@ const styles = StyleSheet.create({
     gap: 5,
     paddingVertical: 8,
   },
-  dot: { backgroundColor: '#696762', borderRadius: 3, height: 6, width: 6 },
+  dot: { backgroundColor: colors.faint, borderRadius: 3, height: 6, width: 6 },
   row: { alignItems: 'flex-start', width: '100%' },
 })

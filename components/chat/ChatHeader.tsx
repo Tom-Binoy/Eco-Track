@@ -3,26 +3,22 @@ import { useRouter } from 'expo-router'
 import type { Href } from 'expo-router'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 
+import { colors, shadows, typography } from '@/components/ui/theme'
+
 export function ChatHeader(): ReactElement {
   const router = useRouter()
 
   return (
     <View style={styles.container}>
-      {__DEV__ ? (
-        <Pressable
-          accessibilityHint="Opens the development motion preview"
-          accessibilityLabel="Open Eco motion lab"
-          accessibilityRole="button"
-          onLongPress={() => router.push('/(app)/motion-lab' as Href)}
-          style={styles.avatar}
-        >
-          <Text style={styles.avatarLabel}>E</Text>
-        </Pressable>
-      ) : (
-        <View style={styles.avatar}>
-          <Text style={styles.avatarLabel}>E</Text>
-        </View>
-      )}
+      <Pressable
+        accessibilityHint="Opens your Eco Track settings"
+        accessibilityLabel="Open settings"
+        accessibilityRole="button"
+        onPress={() => router.push('/(app)/profile' as Href)}
+        style={({ pressed }) => [styles.avatar, pressed && styles.avatarPressed]}
+      >
+        <Text style={styles.avatarLabel}>E</Text>
+      </Pressable>
       <Text style={styles.title}>Today&apos;s Session</Text>
     </View>
   )
@@ -31,8 +27,8 @@ export function ChatHeader(): ReactElement {
 const styles = StyleSheet.create({
   avatar: {
     alignItems: 'center',
-    backgroundColor: '#3a3936',
-    borderColor: '#22c55e',
+    backgroundColor: colors.surfaceRaised,
+    borderColor: colors.accent,
     borderRadius: 19,
     borderWidth: 2,
     height: 38,
@@ -40,15 +36,17 @@ const styles = StyleSheet.create({
     left: 12,
     position: 'absolute',
     width: 38,
+    ...shadows.glow,
   },
-  avatarLabel: { color: '#eeeeee', fontFamily: 'serif', fontSize: 13, fontStyle: 'italic', fontWeight: '700' },
+  avatarLabel: { color: colors.text, fontFamily: typography.body, fontSize: 13, fontStyle: 'italic', fontWeight: '700' },
+  avatarPressed: { opacity: 0.72, transform: [{ scale: 0.96 }] },
   container: {
     alignItems: 'center',
-    backgroundColor: '#2b2a27',
+    backgroundColor: 'rgba(43, 42, 39, 0.96)',
     borderBottomColor: 'rgba(255, 255, 255, 0.06)',
     borderBottomWidth: StyleSheet.hairlineWidth,
     height: 52,
     justifyContent: 'center',
   },
-  title: { color: '#eeeeee', fontFamily: 'serif', fontSize: 14, fontWeight: '600', letterSpacing: 0.14 },
+  title: { color: colors.text, fontFamily: typography.body, fontSize: 14, fontWeight: '600', letterSpacing: 0.14 },
 })

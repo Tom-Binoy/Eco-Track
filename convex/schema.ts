@@ -26,6 +26,8 @@ export default defineSchema({
       sessionLength: v.number(),
     }),
     tonePreference: v.string(),
+    motionPreference: v.optional(v.union(v.literal('responsive'), v.literal('cinematic'))),
+    ecoRevealPreference: v.optional(v.union(v.literal('natural'), v.literal('random'))),
     weightUnit: v.union(v.literal('kg'), v.literal('lbs')),
     distanceUnit: v.union(v.literal('miles'), v.literal('km')),
     darkMode: v.boolean(),
@@ -192,6 +194,7 @@ export default defineSchema({
     type: v.union(v.literal('text'), v.literal('tool_summary')),
     content: v.string(),
     toolName: v.optional(v.string()),
+    cardIds: v.optional(v.array(v.id('cards'))),
     createdAt: v.number(),
   }).index('by_message', ['messageId']),
 

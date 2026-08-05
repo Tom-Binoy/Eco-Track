@@ -107,6 +107,8 @@ profiles: {
   goals                    // string, comma-separated, injected as-is
   trainingAvailability     // { daysPerWeek, sessionLength }
   tonePreference           // string
+  motionPreference         // optional "responsive" | "cinematic"; defaults to "responsive" during rollout
+  ecoRevealPreference      // optional "natural" | "random"; defaults to "natural" during rollout
   weightUnit               // "kg" | "lbs"
   distanceUnit             // "miles" | "km"
   darkMode                 // boolean
@@ -361,13 +363,16 @@ messageBlocks: {
   type        // "text" | "tool_summary"
   content     // string
   toolName    // optional string
+  cardIds     // optional array of cards produced or changed by this tool summary;
+              // presentation uses it to place cards at the tool's timeline position
   createdAt   // number
 }
 .index('by_message', ['messageId'])
 
 // messageBlocks is read into Gemini context and tier-1 compression, as well
-// as remaining client-visible for the processing activity UI. It never stores
-// raw tool payloads; invalid/failed calls become safe concise summary notes.
+// as remaining client-visible for the chronological turn UI. Tool activity is
+// collapsed by default; invalid/failed calls become safe concise summary notes.
+// It never stores raw tool payloads.
 
 toolTraces: {
   messageId       // FK -> messages

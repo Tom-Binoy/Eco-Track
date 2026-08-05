@@ -59,6 +59,13 @@ user reply. Invalid, malformed, or dependency-breaking requests return a
 specific error result to Gemini rather than a backend-authored reply. The
 special repeated general-`Get_data` containment rule is defined below.
 
+A Gemini response may also include non-thought text alongside its function
+requests. This is optional interim engagement, not tool-status narration: use
+it only for a specific, useful observation or continuation grounded in facts
+already known before the result. Never claim a tool succeeded, expose internal
+work, or fill routine/fast tool work with “logging”, “checking”, or waiting
+language. Usually one interim message at most is enough for a user turn.
+
 The five-follow-up safety limit counts follow-up **model requests**, not the
 number of function requests in a batch. A follow-up may carry all results from
 one executed batch. The initial model request does not count; the fifth
@@ -185,7 +192,9 @@ message } }` rather than throwing. Its Zod input is a discriminated union on
 
 BMI, TDEE, and calorie estimation are out of V1 scope.
 
-Response either includes zero or more function requests, or text only. A batch
+One Gemini response may contain ordered text and zero or more function requests.
+Persist non-thought text parts and each tool's safe result summary at their
+original positions so the client can render the turn chronologically. A batch
 of tool requests is followed by one function-response message containing every
 executed result; Gemini then chooses the next batch or the final reply.
 
@@ -194,6 +203,11 @@ executed result; Gemini then chooses the next batch or the final reply.
 Create the Eco `messages` row when processing starts, then complete its
 `ecoText` when the response is available. The client may observe this row and
 its `messageBlocks` trace reactively while processing continues.
+
+The client uses the ordered blocks as the presentation source: text appears at
+its original position; a tool's one safe reduced summary appears there only
+when the user expands activity; and cards referenced by that summary remain
+visible at the same position. Each Eco turn has one activity toggle at its end.
 
 If startup or a tool continuation fails, complete that row with the generic
 unavailable message and retain the detailed non-secret cause only in action
@@ -324,8 +338,10 @@ new personal `Library Exercise N` label before `log_workout`.
   exercise rows render `displayedName` as the primary name and render the
   canonical name as a clearly legible secondary line only when the two names
   differ.
-- `messageBlocks` are written in order as text and `tool_summary` notes. The
-  notes are client-visible and are the persisted main-turn Gemini history.
+- `messageBlocks` are written in order as text and `tool_summary` notes. A
+  tool-summary may reference the card(s) produced or changed by that tool so
+  presentation can render cards at the same chronological position. The notes
+  are client-visible and are the persisted main-turn Gemini history.
   Invalid or failed calls receive a safe concise note. Full requests/results are
   written to internal-only `toolTraces`; they are never sent to Gemini.
   Token/cost records in `apiUsage` remain backend-only.

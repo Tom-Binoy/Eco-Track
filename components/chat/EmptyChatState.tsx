@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 
+import { colors, shadows, typography } from '@/components/ui/theme'
+
 interface EmptyChatStateProps {
   onSelectStarter: (text: string) => void
 }
@@ -40,14 +42,14 @@ export function EmptyChatState({ onSelectStarter }: EmptyChatStateProps): ReactE
 }
 
 const styles = StyleSheet.create({
-  chevron: { color: '#696762', fontFamily: 'serif', fontSize: 18 },
+  chevron: { color: colors.faint, fontFamily: typography.body, fontSize: 18 },
   container: { alignSelf: 'center', marginTop: 30, maxWidth: 300, width: '100%' },
-  copy: { color: '#9a9893', fontFamily: 'serif', fontSize: 13, lineHeight: 21, marginBottom: 24, textAlign: 'center' },
-  heading: { color: '#eeeeee', fontFamily: 'serif', fontSize: 24, fontWeight: '500', lineHeight: 29, marginBottom: 9, textAlign: 'center' },
-  kicker: { color: '#696762', fontFamily: 'serif', fontSize: 10, fontWeight: '700', letterSpacing: 1.4, marginBottom: 8, textAlign: 'center', textTransform: 'uppercase' },
-  mark: { alignItems: 'center', borderColor: 'rgba(34, 197, 94, 0.28)', borderRadius: 34, borderWidth: 1, height: 68, justifyContent: 'center', marginBottom: 22, marginLeft: 'auto', marginRight: 'auto', width: 68 },
-  markLabel: { color: '#22c55e', fontFamily: 'serif', fontSize: 21, fontStyle: 'italic' },
+  copy: { color: colors.textMuted, fontFamily: typography.body, fontSize: 13, lineHeight: 21, marginBottom: 24, textAlign: 'center' },
+  heading: { color: colors.text, fontFamily: typography.body, fontSize: 24, fontWeight: '500', lineHeight: 29, marginBottom: 9, textAlign: 'center' },
+  kicker: { color: colors.faint, fontFamily: typography.body, fontSize: 10, fontWeight: '700', letterSpacing: 1.4, marginBottom: 8, textAlign: 'center', textTransform: 'uppercase' },
+  mark: { alignItems: 'center', borderColor: 'rgba(34, 197, 94, 0.28)', borderRadius: 34, borderWidth: 1, height: 68, justifyContent: 'center', marginBottom: 22, marginLeft: 'auto', marginRight: 'auto', width: 68, ...shadows.glow },
+  markLabel: { color: colors.accent, fontFamily: typography.body, fontSize: 21, fontStyle: 'italic' },
   starter: { alignItems: 'center', backgroundColor: 'rgba(255, 255, 255, 0.018)', borderColor: 'rgba(255, 255, 255, 0.08)', borderRadius: 10, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 44, paddingHorizontal: 13 },
-  starterLabel: { color: '#9a9893', fontFamily: 'serif', fontSize: 12 },
+  starterLabel: { color: colors.textMuted, fontFamily: typography.body, fontSize: 12 },
   starters: { gap: 7 },
 })

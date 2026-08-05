@@ -73,10 +73,12 @@ Replace the Phase 4 placeholder response with the full Gemini turn lifecycle. Th
 > row from its regenerated context, and reuses its stored user text. It does
 > not insert a second `messages` row. When the latest turn is failed, the chat
 > input is disabled and Retry is the only available continuation. The
-> development-facing **Show activity**
-> UI renders only persisted system-generated tool summaries (never text blocks or
-> internal context assembly) and suppresses entries already shown in the
-> immediately preceding Eco response. Full ordered `messageBlocks` remain
+> **Show activity** is one per-turn control at the end of an Eco response.
+> Tool activity is hidden by default; expanding it renders each persisted,
+> system-generated tool summary at its true chronological position, rather than
+> beneath the control. Ordered text blocks remain visible, and cards produced or
+> changed by a tool remain visible at that tool position. There is no
+> cross-message activity suppression. Full ordered `messageBlocks` remain
 > persisted and are still supplied to Gemini and compression as required.
 
 > **Gemini SDK and batched turn-loop update (2026-07-31):** Server-side Gemini
@@ -119,6 +121,13 @@ Replace the Phase 4 placeholder response with the full Gemini turn lifecycle. Th
 > model response, including opaque Gemini 3 `thoughtSignature` parts, before it
 > sends function responses. The application must preserve matching function IDs
 > but must not manually insert or fabricate thought signatures.
+
+> **Interim engagement update (2026-08-05):** The Gemini 3.6 prompt permits
+> an optional brief text part with a tool request when it gives the user a
+> specific, grounded reason to stay engaged while Eco works. It forbids routine
+> tool-status filler, repeated waiting language, and claims that depend on an
+> unreturned tool result. Tool-only responses remain correct for routine or
+> fast work.
 
 The turn lifecycle runs as a **Convex action** (not a mutation) because it calls an external API (Gemini). Actions can call mutations internally.
 

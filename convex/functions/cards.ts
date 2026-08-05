@@ -104,7 +104,40 @@ async function addExerciseDisplay(ctx: QueryCtx, cards: Doc<'cards'>[], userId: 
 
 export const getByMessage = query({ args: { messageId: v.id('messages') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const cards = await ctx.db.query('cards').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).take(50); const firstCard = cards[0]; if (profile === null || firstCard === undefined) return []; const chat = await ctx.db.get(firstCard.chatId); return chat?.userId === profile._id ? await addExerciseDisplay(ctx, cards.sort((left, right) => left.order - right.order), profile._id) : [] } })
 
+export const getPresentation = query({
+  args: { messageId: v.id('messages') },
+  handler: async (ctx, args) => {
+    const auth = await getAuthUserId(ctx)
+    const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique()
+    const message = await ctx.db.get(args.messageId)
+    const chat = message === null ? null : await ctx.db.get(message.chatId)
+    if (profile === null || message === null || chat?.userId !== profile._id) return { error: 'Message not found', blocks: [], cards: [] }
+    const blocks = (await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).take(50))
+      .filter((block) => block.type === 'text' || block.type === 'tool_summary')
+      .sort((left, right) => left.order - right.order)
+    const cardIds = [...new Set(blocks.flatMap((block) => block.cardIds ?? []))]
+    const cards = cardIds.length === 0
+      ? await ctx.db.query('cards').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).take(50)
+      : (await Promise.all(cardIds.map((cardId) => ctx.db.get(cardId)))).filter((card): card is Doc<'cards'> => card !== null && card.chatId === message.chatId)
+    return { blocks, cards: await addExerciseDisplay(ctx, cards, profile._id) }
+  },
+})
+
 export const getDiscussionCard = query({ args: { chatId: v.id('chats') }, handler: async (ctx, args) => { const auth = await getAuthUserId(ctx); const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique(); const chat = await ctx.db.get(args.chatId); if (profile === null || chat?.userId !== profile._id) return null; const card = (await ctx.db.query('cards').withIndex('by_chat', (q) => q.eq('chatId', args.chatId)).take(50)).find((item) => item.inDiscussion); return card === undefined ? null : (await addExerciseDisplay(ctx, [card], profile._id))[0] ?? null } })
+
+export const getPendingDeck = query({
+  args: { chatId: v.id('chats') },
+  handler: async (ctx, args) => {
+    const auth = await getAuthUserId(ctx)
+    const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique()
+    const chat = await ctx.db.get(args.chatId)
+    if (profile === null || chat?.userId !== profile._id) return []
+    const cards = (await ctx.db.query('cards').withIndex('by_chat', (q) => q.eq('chatId', args.chatId)).take(50))
+      .filter((card) => card.state === 'pending')
+      .sort((left, right) => left.order - right.order || left.createdAt - right.createdAt)
+    return await addExerciseDisplay(ctx, cards, profile._id)
+  },
+})
 
 export const confirmCard = mutation({
   args: { cardId: v.id('cards'), parsedData: v.any() },
@@ -131,6 +164,25 @@ export const confirmCard = mutation({
     for (const block of data.blocks) { const blockId = await ctx.db.insert('blocks', { sessionId, userId: access.profile._id, types: [block.type], intervalSeconds: block.intervalSeconds, order: block.order, createdAt: Date.now() }); const write = await writeBlockExercises(ctx, blockId, { ...data, blocks: [block] }, access.profile._id, access.profile.weightUnit); if (write.error) return write }
     await ctx.db.patch(args.cardId, { parsedData: data, sessionId, state: 'confirmed' })
     return { cardId: args.cardId, sessionId }
+  },
+})
+
+export const discardPendingCard = mutation({
+  args: { cardId: v.id('cards') },
+  handler: async (ctx, args) => {
+    const access = await accessCard(ctx, args.cardId)
+    if ('error' in access) return access
+    if (access.card.state !== 'pending') return { error: 'Only pending cards can be discarded' }
+    if (access.card.inDiscussion) return { error: 'Return this card to the deck before discarding it' }
+
+    const blocks = await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', access.card.messageId)).take(50)
+    for (const block of blocks) {
+      if (block.cardIds?.includes(args.cardId)) {
+        await ctx.db.patch(block._id, { cardIds: block.cardIds.filter((cardId) => cardId !== args.cardId) })
+      }
+    }
+    await ctx.db.delete(args.cardId)
+    return { cardId: args.cardId }
   },
 })
 

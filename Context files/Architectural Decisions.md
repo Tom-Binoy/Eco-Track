@@ -155,6 +155,9 @@ actions/runTurn.ts [action]
       `correctsBlockId` and are also re-confirmed.
    5. The Eco message row is created at processing start; its final text and
       ordered text/tool-summary messageBlocks are updated reactively as the turn proceeds.
+      A model response may interleave non-thought text with tool requests; the
+      client renders text, reduced tool activity, and referenced cards at their
+      timeline positions, while activity stays collapsed behind one per-turn toggle.
 ```
 
 **Client-side half (the piece explicitly left open until this session):**

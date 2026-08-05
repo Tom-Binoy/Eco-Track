@@ -10,13 +10,15 @@ import {
   buildGeminiDebugPayload,
   continueGeminiTurn,
   getNewExerciseGuidance,
+  resumeGeminiTurnForFailover,
   type GeminiContext,
   type GeminiResponse,
+  type GeminiTurn,
   type LeanContext,
 } from '../lib/gemini'
 import { EXERCISE_NAMING_GUIDANCE } from '../lib/prompts/ecoSystem'
 import { executeCalculate } from '../lib/calculate'
-import { toolResultSummary, toolStartSummary, type ToolTraceStatus } from '../lib/toolSummary'
+import { toolResultSummary, type ToolTraceStatus } from '../lib/toolSummary'
 import { createCustomExerciseSchema, newExerciseGuidanceInputSchema, type ToolCallData, validateToolCall } from '../lib/validation'
 import { serialiseDebugDetails, serialiseDebugError } from '../debug/sanitise'
 import { createDebugRunId, recordDebugEvent, type DebugEventInput } from '../debug/trace'
@@ -32,8 +34,10 @@ type TurnResult = { ecoText: string; cardId?: Id<'cards'>; error?: string }
 type CachedContext = LeanContext
 type LiveRuntimeConfig = { workflow: 'chat'; modelId: string; systemPrompt: string; poolIds: Id<'debugLiveGeminiPools'>[]; cacheEnabled: boolean; cacheTtlSeconds: number; source: 'default' | 'published'; configId?: string }
 const getLiveRuntimeConfig = makeFunctionReference<'query', Record<string, never>, LiveRuntimeConfig>('debug/liveGemini:getActiveForTurn')
-const reserveLiveGemini = makeFunctionReference<'mutation', { workflow: 'chat'; modelId: string; poolIds: Id<'debugLiveGeminiPools'>[]; requestCount: number }, { apiKey?: string; reservationId?: Id<'debugLiveGeminiReservations'>; error?: string }>('debug/liveGemini:reserve')
+type LiveReservation = { apiKey?: string; reservationId?: Id<'debugLiveGeminiReservations'>; poolId?: Id<'debugLiveGeminiPools'>; poolName?: string; error?: string }
+const reserveLiveGemini = makeFunctionReference<'mutation', { workflow: 'chat'; modelId: string; poolIds: Id<'debugLiveGeminiPools'>[]; requestCount: number; excludedPoolIds?: Id<'debugLiveGeminiPools'>[] }, LiveReservation>('debug/liveGemini:reserve')
 const releaseLiveGemini = makeFunctionReference<'mutation', { reservationId: Id<'debugLiveGeminiReservations'>; usedRequests: number; totalTokens: number }, null>('debug/liveGemini:releaseReservation')
+const markLiveReservationRateLimited = makeFunctionReference<'mutation', { reservationId: Id<'debugLiveGeminiReservations'>; usedRequests: number; totalTokens: number }, null>('debug/liveGemini:markReservationRateLimited')
 
 function compressionSafeToolBlock(block: Doc<'messageBlocks'>): Doc<'messageBlocks'> {
   return block.toolName === 'search_exercise_library'
@@ -45,6 +49,10 @@ function leanContext(profile: Doc<'profiles'>, workoutContext: Doc<'workoutConte
   return { name: profile.name, tonePreference: profile.tonePreference, weightUnit: profile.weightUnit, distanceUnit: profile.distanceUnit, activeInjuries: profile.injuries.filter((injury) => injury.status !== 'resolved'), workoutContext: workoutContext?.content ?? null }
 }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+function isProviderRateLimit(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null && 'status' in error && (error as { status?: unknown }).status === 429) return true
+  return /(?:^|\D)429(?:\D|$)|resource[_ ]?exhausted|rate limit/i.test(errorMessage(error))
+}
 function responseDetails(response: GeminiResponse): string {
   return serialiseDebugDetails({
     rawText: response.rawText,
@@ -168,7 +176,7 @@ export const completeMessage = internalMutation({
   },
 })
 export const setMessageSession = internalMutation({ args: { messageId: v.id('messages'), sessionId: v.id('sessions') }, handler: async (ctx, args) => { await ctx.db.patch(args.messageId, { sessionId: args.sessionId }); return null } })
-export const appendBlock = internalMutation({ args: { messageId: v.id('messages'), order: v.number(), type: v.union(v.literal('text'), v.literal('tool_summary')), content: v.string(), toolName: v.optional(v.string()) }, handler: async (ctx, args) => await ctx.db.insert('messageBlocks', { ...args, createdAt: Date.now() }) })
+export const appendBlock = internalMutation({ args: { messageId: v.id('messages'), order: v.number(), type: v.union(v.literal('text'), v.literal('tool_summary')), content: v.string(), toolName: v.optional(v.string()), cardIds: v.optional(v.array(v.id('cards'))) }, handler: async (ctx, args) => await ctx.db.insert('messageBlocks', { ...args, createdAt: Date.now() }) })
 export const startToolTrace = internalMutation({
   args: { messageId: v.id('messages'), userId: v.id('profiles'), order: v.number(), toolName: v.string(), functionCallId: v.optional(v.string()), requestJson: v.string() },
   handler: async (ctx, args): Promise<Id<'toolTraces'> | { error: string }> => {
@@ -290,7 +298,7 @@ export const purgeExpiredLibraryReferences = internalMutation({
   },
 })
 export const getBlocks = query({
-  args: { messageId: v.id('messages'), previousMessageId: v.optional(v.id('messages')) },
+  args: { messageId: v.id('messages') },
   handler: async (ctx, args) => {
     const auth = await getAuthUserId(ctx)
     const profile = auth === null ? null : await ctx.db.query('profiles').withIndex('by_userId', (q) => q.eq('userId', auth)).unique()
@@ -299,15 +307,9 @@ export const getBlocks = query({
     if (profile === null || message === null || chat?.userId !== profile._id) return { error: 'Message not found', blocks: [] }
 
     const blocks = (await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', args.messageId)).take(50))
-      .filter((block) => block.type === 'tool_summary')
+      .filter((block) => block.type === 'text' || block.type === 'tool_summary')
       .sort((left, right) => left.order - right.order)
-    if (args.previousMessageId === undefined) return { blocks }
-
-    const previousMessage = await ctx.db.get(args.previousMessageId)
-    if (previousMessage === null || previousMessage.chatId !== message.chatId) return { blocks }
-    const previousBlocks = await ctx.db.query('messageBlocks').withIndex('by_message', (q) => q.eq('messageId', previousMessage._id)).take(50)
-    const shownActivity = new Set(previousBlocks.filter((block) => block.type === 'tool_summary').map((block) => `${block.type}:${block.toolName ?? ''}:${block.content}`))
-    return { blocks: blocks.filter((block) => !shownActivity.has(`${block.type}:${block.toolName ?? ''}:${block.content}`)) }
+    return { blocks }
   },
 })
 
@@ -1043,8 +1045,8 @@ export const processTurn = action({
 })
 */
 
-type ToolRequest = { name: string; args: object; id?: string; traceId?: Id<'toolTraces'> }
-type ToolExecution = { request: ToolRequest; result: Record<string, unknown>; cardId?: Id<'cards'> }
+type ToolRequest = { name: string; args: object; id?: string; traceId?: Id<'toolTraces'>; timelineOrder: number }
+type ToolExecution = { request: ToolRequest; result: Record<string, unknown>; cardIds: Id<'cards'>[] }
 
 function requestRecord(args: object): Record<string, unknown> {
   return args as Record<string, unknown>
@@ -1114,10 +1116,11 @@ export const processTurn = action({
     // The selected key remains pinned for this turn's SDK chat/tool loop.
     const liveReservation = await ctx.runMutation(reserveLiveGemini, { workflow: 'chat', modelId: runtimeConfig.modelId, poolIds: runtimeConfig.poolIds, requestCount: 1 })
     if (liveReservation.apiKey === undefined) return { ecoText: '', error: responseUnavailableText }
-    const modelRuntimeConfig = { ...runtimeConfig, apiKey: liveReservation.apiKey }
+    let activeLiveReservation = liveReservation
+    let modelRuntimeConfig = { ...runtimeConfig, apiKey: liveReservation.apiKey }
     let reservedRequestsUsed = 0
     const releaseLiveReservation = async (tokens: number): Promise<void> => {
-      if (liveReservation.reservationId !== undefined) await ctx.runMutation(releaseLiveGemini, { reservationId: liveReservation.reservationId, usedRequests: reservedRequestsUsed, totalTokens: tokens })
+      if (activeLiveReservation.reservationId !== undefined) await ctx.runMutation(releaseLiveGemini, { reservationId: activeLiveReservation.reservationId, usedRequests: reservedRequestsUsed, totalTokens: tokens })
     }
 
     const contextStartedAt = Date.now()
@@ -1169,15 +1172,29 @@ export const processTurn = action({
     let blockOrder = 0
     let tokensUsed = 0
     let lastCardId: Id<'cards'> | undefined
+    const ecoTextSegments: string[] = []
     let historicalExerciseDetailsFetched = false
     const historicalBlocks = new Map<string, Id<'blocks'>>()
     let completedGetDataCalls = 0
     let lastGetDataResult: Record<string, unknown> | null = null
     let toolTraceOrder = 0
 
-    const append = async (type: 'text' | 'tool_summary', content: string, toolName?: string): Promise<void> => {
-      await ctx.runMutation(internal.functions.messages.appendBlock, { messageId, order: blockOrder, type, content, toolName })
-      blockOrder += 1
+    const append = async (type: 'text' | 'tool_summary', content: string, toolName?: string, cardIds?: Id<'cards'>[], order = blockOrder): Promise<void> => {
+      await ctx.runMutation(internal.functions.messages.appendBlock, { messageId, order, type, content, toolName, cardIds })
+      if (order === blockOrder) blockOrder += 1
+    }
+    const reserveResponseTimeline = async (nextResponse: GeminiResponse): Promise<ToolRequest[]> => {
+      const requests: ToolRequest[] = []
+      for (const part of nextResponse.parts) {
+        if (part.kind === 'text') {
+          ecoTextSegments.push(part.text)
+          await append('text', part.text)
+        } else {
+          requests.push({ name: part.call.name ?? '', args: part.call.args ?? {}, id: part.call.id, timelineOrder: blockOrder })
+          blockOrder += 1
+        }
+      }
+      return requests
     }
     const beginToolTrace = async (request: ToolRequest): Promise<void> => {
       const trace = await ctx.runMutation(internal.functions.messages.startToolTrace, {
@@ -1190,8 +1207,6 @@ export const processTurn = action({
       })
       toolTraceOrder += 1
       if (typeof trace !== 'object') request.traceId = trace
-      const startSummary = toolStartSummary(request.name)
-      if (startSummary !== null) await append('tool_summary', startSummary, request.name)
     }
     const finishToolTrace = async (
       execution: ToolExecution,
@@ -1209,13 +1224,13 @@ export const processTurn = action({
         args: execution.request.args,
         result: execution.result,
         status,
-      }), execution.request.name)
+      }), execution.request.name, execution.cardIds, execution.request.timelineOrder)
     }
     const execute = async (request: ToolRequest): Promise<ToolExecution> => {
       const toolName = request.name
       const requestArgs = requestRecord(request.args)
       let result: Record<string, unknown>
-      let cardId: Id<'cards'> | undefined
+      const cardIds: Id<'cards'>[] = []
       if (toolName === 'calculate') result = executeCalculate(request.args)
       else if (toolName === 'Get_data') {
         if (!isConcreteGetDataRequest(requestArgs)) result = { error: 'Get_data requires at least one concrete collection point, date range, daily summary date, or previously returned Exercise label.' }
@@ -1305,13 +1320,13 @@ export const processTurn = action({
           else {
             const write = await ctx.runMutation(internal.functions.cards.applyDiscussionCorrection, { cardId: card._id, parsedData: validation.parsedData, rawOutput: JSON.stringify(correction) })
             result = write
-            cardId = 'cardId' in write ? write.cardId : undefined
+            if ('cardId' in write && write.cardId !== undefined) cardIds.push(write.cardId as Id<'cards'>)
           }
         } else if (correction.target === 'historical' && typeof correction.exerciseId === 'string' && historicalExerciseDetailsFetched) {
           const blockId = historicalBlocks.get(correction.exerciseId)
           const block = blockId === undefined ? null : await ctx.runQuery(internal.functions.exercises.getHistoricalBlock, { userId: context.profile._id, blockId })
           result = block === null ? { error: 'The requested historical exercise was not found after lookup.' } : await ctx.runMutation(internal.functions.messages.writeLowConfidenceTurn, { chatId: args.chatId, messageId, parsedData: validation.parsedData, rawOutput: JSON.stringify(correction), correctsBlockId: block._id })
-          cardId = 'cardId' in result ? result.cardId as Id<'cards'> : undefined
+          if ('cardId' in result && result.cardId !== undefined) cardIds.push(result.cardId as Id<'cards'>)
         } else result = { error: 'Correct_log needs a valid active Card label, or a historical Exercise label whose full details were returned by Get_data earlier in this turn.' }
       } else if (toolName === 'log_workout') {
         const labels = libraryExerciseLabels(request.args)
@@ -1330,15 +1345,60 @@ export const processTurn = action({
               ? await ctx.runMutation(internal.functions.messages.writeLowConfidenceTurn, { chatId: args.chatId, messageId, parsedData: blockData, rawOutput: JSON.stringify(blockData), order: index })
               : await ctx.runMutation(internal.functions.cards.writeHighConfidenceCard, { chatId: args.chatId, messageId, userId: context.profile._id, parsedData: blockData, rawOutput: JSON.stringify(blockData), order: index })
             writes.push(write)
-            if ('cardId' in write) cardId = write.cardId as Id<'cards'>
-            if ('error' in write && write.error !== undefined) { result = { error: write.error, writes }; return { request, result, cardId } }
+            if ('cardId' in write && write.cardId !== undefined) cardIds.push(write.cardId as Id<'cards'>)
+            if ('error' in write && write.error !== undefined) { result = { error: write.error, writes }; return { request, result, cardIds } }
             if ('sessionId' in write && write.sessionId !== undefined) await ctx.runMutation(internal.functions.messages.setMessageSession, { messageId, sessionId: write.sessionId as Id<'sessions'> })
           }
           result = { logged: true, needsClarification: validation.parsedData.needsClarification, writes }
         }
       } else result = { error: `Unknown tool ${toolName}.` }
-      return { request, result, cardId }
+      return { request, result, cardIds }
     }
+
+    let failoverCount = 0
+    const failedPoolIds: Id<'debugLiveGeminiPools'>[] = []
+    const failOverAfterRateLimit = async (error: unknown, callIndex: number): Promise<boolean> => {
+      if (!isProviderRateLimit(error) || failoverCount >= 1) return false
+      if (activeLiveReservation.reservationId !== undefined) {
+        await ctx.runMutation(markLiveReservationRateLimited, {
+          reservationId: activeLiveReservation.reservationId,
+          usedRequests: Math.max(reservedRequestsUsed, 1),
+          totalTokens: tokensUsed,
+        })
+      }
+      if (activeLiveReservation.poolId !== undefined) failedPoolIds.push(activeLiveReservation.poolId)
+      await trace({
+        kind: 'warning', status: 'warning', title: 'Gemini pool returned 429',
+        summary: `Pool ${activeLiveReservation.poolName ?? 'default'} was rate-limited and placed on cooldown.`,
+        source: { file: 'convex/functions/messages.ts', symbol: 'processTurn' },
+        details: serialiseDebugDetails({ callIndex, poolId: activeLiveReservation.poolId, poolName: activeLiveReservation.poolName, error: errorMessage(error) }),
+        callIndex, warningCodes: [],
+      })
+      const replacement = await ctx.runMutation(reserveLiveGemini, {
+        workflow: 'chat', modelId: runtimeConfig.modelId, poolIds: runtimeConfig.poolIds, requestCount: 1, excludedPoolIds: failedPoolIds,
+      })
+      if (replacement.apiKey === undefined) return false
+      activeLiveReservation = replacement
+      modelRuntimeConfig = { ...runtimeConfig, apiKey: replacement.apiKey }
+      reservedRequestsUsed = 0
+      failoverCount += 1
+      await trace({
+        kind: 'lifecycle', status: 'success', title: 'Gemini failed over to pool',
+        summary: `Retrying Gemini call ${callIndex} with pool ${replacement.poolName ?? 'default'}.`,
+        source: { file: 'convex/functions/messages.ts', symbol: 'processTurn' },
+        details: serialiseDebugDetails({ callIndex, failedPoolIds, poolId: replacement.poolId, poolName: replacement.poolName }),
+        callIndex, warningCodes: [],
+      })
+      return true
+    }
+
+    await trace({
+      kind: 'lifecycle', status: 'success', title: 'Gemini pool selected',
+      summary: `Sending the turn to pool ${activeLiveReservation.poolName ?? 'default'}.`,
+      source: { file: 'convex/functions/messages.ts', symbol: 'processTurn' },
+      details: serialiseDebugDetails({ poolId: activeLiveReservation.poolId, poolName: activeLiveReservation.poolName }),
+      warningCodes: [],
+    })
 
     const initialCallStartedAt = Date.now()
     await trace({
@@ -1352,12 +1412,25 @@ export const processTurn = action({
       occurredAt: initialCallStartedAt,
       warningCodes: [],
     })
-    let geminiTurn
-    try { geminiTurn = await beginGeminiTurn(context, userText, modelRuntimeConfig); reservedRequestsUsed += 1 } catch (error) {
+    let geminiTurn: GeminiTurn | undefined
+    let initialError: unknown | null = null
+    for (let attempt = 0; attempt < 2 && geminiTurn === undefined; attempt += 1) {
+      try { geminiTurn = await beginGeminiTurn(context, userText, modelRuntimeConfig); reservedRequestsUsed += 1 } catch (error) {
+        initialError = error
+        await trace({
+          kind: 'error', status: 'error', title: `Gemini call 0${attempt === 0 ? '' : ' failover retry'} failed`, summary: errorMessage(error),
+          source: { file: 'convex/lib/gemini.ts', symbol: 'beginGeminiTurn' }, details: serialiseDebugError(error), callIndex: 0,
+          durationMs: Date.now() - initialCallStartedAt, warningCodes: [],
+        })
+        if (!await failOverAfterRateLimit(error, 0)) break
+      }
+    }
+    if (geminiTurn === undefined) {
+      const error = initialError ?? new Error('Gemini did not start a chat turn.')
       await trace({
         kind: 'error',
         status: 'error',
-        title: 'Gemini call 0 failed',
+        title: 'Gemini call 0 ended without a response',
         summary: errorMessage(error),
         source: { file: 'convex/lib/gemini.ts', symbol: 'beginGeminiTurn' },
         details: serialiseDebugError(error),
@@ -1385,13 +1458,10 @@ export const processTurn = action({
       warningCodes: [],
     })
     tokensUsed += response.tokensUsed
+    let pendingRequests = await reserveResponseTimeline(response)
     let geminiCallIndex = 0
-    for (let followUpRequests = 0; response.functionCalls.length > 0; followUpRequests += 1) {
-      const requests: ToolRequest[] = response.functionCalls.map((call) => ({
-        name: call.name ?? '',
-        args: call.args ?? {},
-        id: call.id,
-      }))
+    for (let followUpRequests = 0; pendingRequests.length > 0; followUpRequests += 1) {
+      const requests = pendingRequests
       if (followUpRequests >= followUpRequestLimit) {
         for (const request of requests) {
           usedTools.push(request.name)
@@ -1405,9 +1475,11 @@ export const processTurn = action({
               instruction: 'The final follow-up opportunity was already used. End this turn conversationally without claiming this request ran.',
             },
           }
-          await finishToolTrace({ request, result }, 'rejected')
+          await finishToolTrace({ request, result, cardIds: [] }, 'rejected')
         }
-        response = { ...response, functionCalls: [], rawText: '', text: followUpLimitFallback }
+        ecoTextSegments.push(followUpLimitFallback)
+        await append('text', followUpLimitFallback)
+        response = { ...response, functionCalls: [], rawText: '', text: followUpLimitFallback, parts: [{ kind: 'text', text: followUpLimitFallback }] }
         break
       }
       for (const request of requests) {
@@ -1423,7 +1495,7 @@ export const processTurn = action({
         if (next.name === 'Get_data' && typeof nextArgs.exerciseId !== 'string') {
           if (completedGetDataCalls > 0) {
             const result = { error: 'Get_data profile, date-range, and daily-summary lookups must be combined into the first general lookup of the turn.' }
-            executions.push({ request: next, result })
+            executions.push({ request: next, result, cardIds: [] })
             redundantGetDataDetected = true
             await trace({
               kind: 'warning',
@@ -1461,13 +1533,17 @@ export const processTurn = action({
         result: withTurnControl(execution.result, completedFollowUpRequests),
       }))
       for (const execution of controlledExecutions) {
-        if (execution.cardId !== undefined) lastCardId = execution.cardId
+        const latestCardId = execution.cardIds.at(-1)
+        if (latestCardId !== undefined) lastCardId = latestCardId
         await finishToolTrace(execution, 'completed')
         await trace({ kind: 'tool', status: toolResultHasError(execution.result) ? 'error' : 'success', title: `${execution.request.name} executed`, summary: toolResultHasError(execution.result) ? 'The tool returned a recoverable error for Gemini.' : 'The tool returned a result for Gemini.', source: { file: 'convex/functions/messages.ts', symbol: 'processTurn' }, details: serialiseDebugDetails({ arguments: execution.request.args, result: execution.result }), toolName: execution.request.name, warningCodes: toolResultHasError(execution.result) ? [DEBUG_WARNING.toolResultError] : [] })
       }
       if (redundantGetDataDetected) {
         const fallbackContext = lastGetDataResult ?? { profile: { name: context.leanContext.name } }
-        response = { ...response, functionCalls: [], rawText: '', text: dataLookupFallback(fallbackContext) }
+        const fallback = dataLookupFallback(fallbackContext)
+        ecoTextSegments.push(fallback)
+        await append('text', fallback)
+        response = { ...response, functionCalls: [], rawText: '', text: fallback, parts: [{ kind: 'text', text: fallback }] }
         break
       }
       const toolResponses = controlledExecutions.map(({ request, result }) => ({ name: request.name, response: result, id: request.id }))
@@ -1484,7 +1560,9 @@ export const processTurn = action({
         occurredAt: continuationStartedAt,
         warningCodes: [],
       })
+      let continuationError: unknown | null = null
       try { response = await continueGeminiTurn(geminiTurn.chat, toolResponses); reservedRequestsUsed += 1 } catch (error) {
+        continuationError = error
         await trace({
           kind: 'error',
           status: 'error',
@@ -1496,10 +1574,23 @@ export const processTurn = action({
           durationMs: Date.now() - continuationStartedAt,
           warningCodes: [],
         })
+        if (await failOverAfterRateLimit(error, geminiCallIndex)) {
+          geminiTurn.chat = resumeGeminiTurnForFailover(geminiTurn.chat, context, modelRuntimeConfig)
+          try { response = await continueGeminiTurn(geminiTurn.chat, toolResponses); reservedRequestsUsed += 1; continuationError = null } catch (retryError) {
+            continuationError = retryError
+            await trace({
+              kind: 'error', status: 'error', title: `Gemini call ${geminiCallIndex} failover retry failed`, summary: errorMessage(retryError),
+              source: { file: 'convex/lib/gemini.ts', symbol: 'continueGeminiTurn' }, details: serialiseDebugError(retryError), callIndex: geminiCallIndex,
+              durationMs: Date.now() - continuationStartedAt, warningCodes: [],
+            })
+          }
+        }
+      }
+      if (continuationError !== null) {
         await ctx.runMutation(internal.functions.apiUsage.logUsage, { userId: context.profile._id, tokensUsed, timestamp: Date.now() })
         await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: responseUnavailableText, usedTools })
         await releaseLiveReservation(tokensUsed)
-        return { ecoText: '', error: `${responseUnavailableText} ${errorMessage(error)}` }
+        return { ecoText: '', error: `${responseUnavailableText} ${errorMessage(continuationError)}` }
       }
       await trace({
         kind: 'gemini',
@@ -1516,11 +1607,12 @@ export const processTurn = action({
         warningCodes: [],
       })
       tokensUsed += response.tokensUsed
+      pendingRequests = await reserveResponseTimeline(response)
     }
     await ctx.runMutation(internal.functions.apiUsage.logUsage, { userId: context.profile._id, tokensUsed, timestamp: Date.now() })
     await releaseLiveReservation(tokensUsed)
-    await append('text', response.text)
-    await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText: response.text, usedTools: usedTools.length === 0 ? undefined : usedTools, isFinalGeminiResponse: true })
-    return { ecoText: response.text, cardId: lastCardId }
+    const ecoText = ecoTextSegments.join('\n\n') || response.text
+    await ctx.runMutation(internal.functions.messages.completeMessage, { messageId, ecoText, usedTools: usedTools.length === 0 ? undefined : usedTools, isFinalGeminiResponse: true })
+    return { ecoText, cardId: lastCardId }
   },
 })

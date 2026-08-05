@@ -2,20 +2,27 @@ import { useState, type ReactElement } from 'react'
 import { KeyboardAvoidingView, Platform, StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useMutation } from 'convex/react'
+import NetInfo, { useNetInfo } from '@react-native-community/netinfo'
 
 import { ChatHeader } from '@/components/chat/ChatHeader'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { MessageList } from '@/components/chat/MessageList'
+import { OfflineOverlay } from '@/components/chat/OfflineOverlay'
+import { colors } from '@/components/ui/theme'
 import { useChat } from '@/hooks/useChat'
+import { useAuth } from '@/hooks/useAuth'
 import { api } from '@/convex/_generated/api'
 import type { Id } from '@/convex/_generated/dataModel'
 
 export default function ChatScreen(): ReactElement {
-  const { discussionCard, hasFailedTurn, isLoading, messages, retryMessage, sendMessage, turnStatus } = useChat()
+  const { profile } = useAuth()
+  const network = useNetInfo()
+  const { discussionCard, hasFailedTurn, isLoading, messages, messagesReady, pendingCards, retryMessage, sendMessage, turnStatus } = useChat()
   const [discussionError, setDiscussionError] = useState<string | null>(null)
   const [isClosingDiscussion, setIsClosingDiscussion] = useState(false)
   const setInDiscussion = useMutation(api.functions.cards.setInDiscussion)
   const bringCardBackToDeck = useMutation(api.functions.cards.bringCardBackToDeck)
+  const isOffline = network.isConnected === false
 
   const handleAskEco = async (cardId: Id<'cards'>): Promise<void> => {
     setDiscussionError(null)
@@ -42,12 +49,16 @@ export default function ChatScreen(): ReactElement {
       >
         <ChatHeader />
         <MessageList
+          distanceUnit={profile?.distanceUnit ?? 'km'}
           isLoading={isLoading}
           messages={messages}
+          messagesReady={messagesReady}
           onAskEco={handleAskEco}
           onRetry={retryMessage}
           onSelectStarter={sendMessage}
+          pendingCards={pendingCards}
           turnStatus={turnStatus}
+          weightUnit={profile?.weightUnit ?? 'kg'}
         />
         <ChatInput
           discussionCard={discussionCard}
@@ -58,6 +69,7 @@ export default function ChatScreen(): ReactElement {
           onBringCardBackToDeck={handleBringCardBackToDeck}
           onSend={sendMessage}
         />
+        {isOffline ? <OfflineOverlay onRetry={() => void NetInfo.refresh()} /> : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   )
@@ -65,5 +77,5 @@ export default function ChatScreen(): ReactElement {
 
 const styles = StyleSheet.create({
   keyboardAvoidingView: { flex: 1 },
-  safeArea: { backgroundColor: '#2b2a27', flex: 1 },
+  safeArea: { backgroundColor: colors.background, flex: 1 },
 })
